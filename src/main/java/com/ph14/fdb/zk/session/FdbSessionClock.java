@@ -51,10 +51,11 @@ public class FdbSessionClock implements Closeable {
   }
 
   private void cleanExpiredSessions() {
+    fdbSessionDataPurger.maintainLog(clock.millis());
     List<CompletableFuture<Void>> futures = new ArrayList<>();
 
     for (long expiredSessionId : fdbSessionManager.getExpiredSessionIds(clock.millis())) {
-      futures.add(fdbSessionDataPurger.removeAllSessionData(expiredSessionId));
+      futures.add(fdbSessionDataPurger.removeExpiredSessionData(expiredSessionId, true));
     }
 
     futures.forEach(CompletableFuture::join);

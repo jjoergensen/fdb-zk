@@ -10,6 +10,7 @@ import java.util.stream.Collectors;
 
 import org.apache.zookeeper.KeeperException.SessionExpiredException;
 import org.apache.zookeeper.KeeperException.SessionMovedException;
+import org.apache.zookeeper.KeeperException;
 import org.apache.zookeeper.server.SessionTracker;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -19,7 +20,6 @@ import com.apple.foundationdb.KeyValue;
 import com.apple.foundationdb.MutationType;
 import com.apple.foundationdb.Range;
 import com.apple.foundationdb.Transaction;
-import com.apple.foundationdb.directory.DirectoryLayer;
 import com.apple.foundationdb.directory.DirectorySubspace;
 import com.apple.foundationdb.tuple.Tuple;
 import com.apple.foundationdb.tuple.Versionstamp;
@@ -40,7 +40,6 @@ public class FdbSessionManager implements SessionTracker {
   static final List<String> SESSION_TIMEOUT_DIRECTORY = Collections.singletonList("fdb-zk-sessions-by-timeout");
 
   private final Database fdb;
-  private final byte[] incompleteSessionsByIdKey;
   private final DirectorySubspace sessionsById;
   private final DirectorySubspace sessionsByTimeout;
   private final Clock clock;
@@ -50,10 +49,17 @@ public class FdbSessionManager implements SessionTracker {
   public FdbSessionManager(Database fdb,
                            Clock clock,
                            @Named("serverTickMillis") OptionalLong serverTickMillis) {
+    this(fdb, clock, serverTickMillis,
+        fdb.run(tr -> com.ph14.fdb.zk.FdbZkKeyspace.dir().createOrOpen(tr, SESSION_DIRECTORY).join()),
+        fdb.run(tr -> com.ph14.fdb.zk.FdbZkKeyspace.dir().createOrOpen(tr, SESSION_TIMEOUT_DIRECTORY).join()));
+  }
+
+  @VisibleForTesting
+  public FdbSessionManager(Database fdb, Clock clock, OptionalLong serverTickMillis,
+                           DirectorySubspace sessionsById, DirectorySubspace sessionsByTimeout) {
     this.fdb = fdb;
-    this.sessionsById = fdb.run(tr -> com.ph14.fdb.zk.FdbZkKeyspace.dir().createOrOpen(tr, SESSION_DIRECTORY).join());
-    this.sessionsByTimeout = fdb.run(tr -> com.ph14.fdb.zk.FdbZkKeyspace.dir().createOrOpen(tr, SESSION_TIMEOUT_DIRECTORY).join());
-    this.incompleteSessionsByIdKey = sessionsById.packWithVersionstamp(Tuple.from(Versionstamp.incomplete()));
+    this.sessionsById = sessionsById;
+    this.sessionsByTimeout = sessionsByTimeout;
     this.clock = clock;
     this.serverTickMillis = serverTickMillis.orElse(500L);
   }
@@ -72,7 +78,7 @@ public class FdbSessionManager implements SessionTracker {
       // session id --> (next expiration, timeoutMs)
       tr.mutate(
           MutationType.SET_VERSIONSTAMPED_KEY,
-          incompleteSessionsByIdKey,
+          sessionsById.packWithVersionstamp(Tuple.from(Versionstamp.incomplete())),
           getSessionByIdValue(sessionExpirationTimestamp, sessionTimeout));
 
       // next expiration --> session ids
@@ -92,14 +98,12 @@ public class FdbSessionManager implements SessionTracker {
   // ZooKeeper 3.6+ split addSession into track/commit; every session here is global and lives in FDB.
   @Override
   public boolean trackSession(long sessionId, int sessionTimeout) {
-    addSession(sessionId, sessionTimeout);
-    return true;
+    return touchSession(sessionId, sessionTimeout);
   }
 
   @Override
   public boolean commitSession(long sessionId, int sessionTimeout) {
-    addSession(sessionId, sessionTimeout);
-    return true;
+    return touchSession(sessionId, sessionTimeout);
   }
 
   @Override
@@ -165,43 +169,25 @@ public class FdbSessionManager implements SessionTracker {
 
   @Override
   public boolean touchSession(long sessionId, int sessionTimeout) {
-    byte[] value = fdb.readAsync(rt -> rt.get(getSessionByIdKey(sessionId))).join();
-
-    if (value == null) {
-      return false;
-    }
-
-    Tuple tuple = Tuple.fromBytes(value);
-    long persistedNextSessionExpirationTimestamp = tuple.getLong(0);
-
-    long newlyComputedNextExpirationTimestamp = calculateSessionExpirationTimestamp(clock.millis(), sessionTimeout);
-
-    if (persistedNextSessionExpirationTimestamp >= newlyComputedNextExpirationTimestamp) {
-      // this session already got a higher expiration timestamp from a previous touch with a greater `sessionTimeout`
-      return true;
-    }
-
     return fdb.run(tr -> {
-      // update existing session --> timestamp entry
-      tr.set(
-          getSessionByIdKey(sessionId),
-          getSessionByIdValue(newlyComputedNextExpirationTimestamp, sessionTimeout)
-      );
-
-      // update timestamp --> session
-      tr.clear(getSessionByTimestampKey(sessionId, persistedNextSessionExpirationTimestamp));
-      tr.set(
-          getSessionByTimestampKey(sessionId, newlyComputedNextExpirationTimestamp),
-          EMPTY_VALUE
-      );
-
+      byte[] value = tr.get(getSessionByIdKey(sessionId)).join();
+      if (value == null || tr.get(closingKey(sessionId)).join() != null) {
+        return false;
+      }
+      Tuple current = Tuple.fromBytes(value);
+      long expiration = calculateSessionExpirationTimestamp(clock.millis(), sessionTimeout);
+      if (expiration > current.getLong(0)) {
+        tr.clear(getSessionByTimestampKey(sessionId, current.getLong(0)));
+        tr.set(getSessionByIdKey(sessionId), getSessionByIdValue(expiration, sessionTimeout));
+        tr.set(getSessionByTimestampKey(sessionId, expiration), EMPTY_VALUE);
+      }
       return true;
     });
   }
 
   @Override
   public void setSessionClosing(long sessionId) {
-    removeSession(sessionId);
+    fdb.run(tr -> { beginClose(tr, sessionId, false); return null; });
   }
 
   @Override
@@ -215,6 +201,8 @@ public class FdbSessionManager implements SessionTracker {
     return transaction.get(sessionByIdKey).thenAccept(currentSession -> {
       if (currentSession != null) {
         transaction.clear(sessionByIdKey);
+        transaction.clear(closingKey(sessionId));
+        transaction.clear(connectionKey(sessionId));
         long sessionExpirationTimestamp = Tuple.fromBytes(currentSession).getLong(0);
 
         // next expiration --> session ids
@@ -230,18 +218,39 @@ public class FdbSessionManager implements SessionTracker {
 
   @Override
   public void checkSession(long sessionId, Object owner) throws SessionExpiredException, SessionMovedException {
-    byte[] value = fdb.read(rt -> rt.get(getSessionByIdKey(sessionId)).join());
+    KeeperException.Code code = fdb.run(tr -> validate(tr, sessionId, null));
+    if (code == KeeperException.Code.SESSIONEXPIRED) throw new SessionExpiredException();
+    if (code == KeeperException.Code.SESSIONMOVED) throw new SessionMovedException();
+  }
 
-    if (value == null) {
-      throw new SessionExpiredException();
+  public KeeperException.Code validate(Transaction tr, long sessionId, byte[] epoch) {
+    byte[] value = tr.get(getSessionByIdKey(sessionId)).join();
+    if (value == null || tr.get(closingKey(sessionId)).join() != null
+        || Tuple.fromBytes(value).getLong(0) <= clock.millis()) {
+      return KeeperException.Code.SESSIONEXPIRED;
     }
-
-    Tuple tuple = Tuple.fromBytes(value);
-    long sessionExpirationTimestamp = tuple.getLong(0);
-
-    if (sessionExpirationTimestamp <= clock.millis()) {
-      throw new SessionExpiredException();
+    if (epoch != null && !java.util.Arrays.equals(epoch, tr.get(connectionKey(sessionId)).join())) {
+      return KeeperException.Code.SESSIONMOVED;
     }
+    return KeeperException.Code.OK;
+  }
+
+  public boolean beginClose(Transaction tr, long sessionId, boolean expiredOnly) {
+    byte[] value = tr.get(getSessionByIdKey(sessionId)).join();
+    if (value == null) return false;
+    if (tr.get(closingKey(sessionId)).join() != null) return true;
+    if (expiredOnly && Tuple.fromBytes(value).getLong(0) > clock.millis()) return false;
+    tr.set(closingKey(sessionId), EMPTY_VALUE);
+    tr.clear(connectionKey(sessionId));
+    return true;
+  }
+
+  public static byte[] closingKey(long sessionId) {
+    return com.ph14.fdb.zk.FdbZkKeyspace.raw().pack(Tuple.from("session-closing", sessionId));
+  }
+
+  public static byte[] connectionKey(long sessionId) {
+    return com.ph14.fdb.zk.FdbZkKeyspace.raw().pack(Tuple.from("fdb-zk-watch-connection", sessionId));
   }
 
   @VisibleForTesting
@@ -253,15 +262,19 @@ public class FdbSessionManager implements SessionTracker {
     List<KeyValue> keyValues = fdb.read(rt -> rt.getRange(
         new Range(
             getSessionByTimestampKey(0, 0),
-            getSessionByTimestampKey(Long.MAX_VALUE, greatestExpiredSessionTimestamp)))
+            getSessionByTimestampKey(Long.MAX_VALUE, greatestExpiredSessionTimestamp)), 128)
         .asList()
         .join()
     );
 
-    return keyValues.stream()
-        .map(kv -> sessionsByTimeout.unpack(kv.getKey()).getVersionstamp(1).getTransactionVersion())
-        .map(Longs::fromByteArray)
+    List<Long> closing = fdb.run(tr -> tr.getRange(com.ph14.fdb.zk.FdbZkKeyspace.raw()
+        .range(Tuple.from("session-closing")), 128).asList().join()).stream()
+        .map(kv -> com.ph14.fdb.zk.FdbZkKeyspace.raw().unpack(kv.getKey()).getLong(1))
         .collect(Collectors.toList());
+    keyValues.stream()
+        .map(kv -> sessionsByTimeout.unpack(kv.getKey()).getVersionstamp(1).getTransactionVersion())
+        .map(Longs::fromByteArray).forEach(closing::add);
+    return closing.stream().distinct().collect(Collectors.toList());
   }
 
   @Override

@@ -3,8 +3,8 @@ package com.ph14.fdb.zk;
 import java.io.IOException;
 
 import org.apache.jute.Record;
-import org.apache.zookeeper.KeeperException;
 import org.apache.zookeeper.KeeperException.Code;
+import org.apache.zookeeper.KeeperException;
 import org.apache.zookeeper.ZooDefs.OpCode;
 import org.apache.zookeeper.proto.ReplyHeader;
 import org.apache.zookeeper.server.Request;
@@ -37,7 +37,8 @@ public class FdbRequestProcessor implements RequestProcessor {
 
   @Override
   public void processRequest(Request request) {
-    sessionWatchFeed.processRequest(request.sessionId, () -> processSessionRequest(request));
+    sessionWatchFeed.submit(request.sessionId,
+        () -> sessionWatchFeed.processRequest(request.sessionId, () -> processSessionRequest(request)));
   }
 
   private void processSessionRequest(Request request) {
@@ -56,6 +57,8 @@ public class FdbRequestProcessor implements RequestProcessor {
         LOG.error("Request failed: {}", request, e);
         result = Result.err(new KeeperException.SystemErrorException());
       }
+      if (request.zxid < 0) request.zxid = fdbZooKeeper.currentZxid();
+      if (request.type != OpCode.closeSession) sessionWatchFeed.beforeReply(request.sessionId, request.zxid);
       sendResponse(request, result);
     } catch (Throwable replyFailure) {
       LOG.error("Could not send reply for {}", request, replyFailure);
@@ -101,7 +104,7 @@ public class FdbRequestProcessor implements RequestProcessor {
       LOG.error("What is going on send help. Request: {}", request);
     }
 
-    ReplyHeader hdr = new ReplyHeader(request.cxid, System.currentTimeMillis(), errorCode);
+    ReplyHeader hdr = new ReplyHeader(request.cxid, request.zxid, errorCode);
 
     try {
       LOG.debug("Returning: {}", result);

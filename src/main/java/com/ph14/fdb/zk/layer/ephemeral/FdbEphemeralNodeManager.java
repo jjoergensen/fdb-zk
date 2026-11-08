@@ -6,7 +6,6 @@ import com.apple.foundationdb.Range;
 import com.apple.foundationdb.Transaction;
 import com.apple.foundationdb.subspace.Subspace;
 import com.apple.foundationdb.tuple.Tuple;
-import com.google.common.base.Charsets;
 import com.google.common.collect.Iterables;
 import com.google.inject.Inject;
 import com.google.inject.Singleton;
@@ -34,6 +33,12 @@ public class FdbEphemeralNodeManager {
         .thenApply(kvs -> Iterables.transform(
             kvs,
             kv -> ephemeralNodes.unpack(kv.getKey()).getString(1)));
+  }
+
+  public CompletableFuture<java.util.List<String>> getBatch(Transaction transaction, long sessionId, int limit) {
+    return transaction.getRange(ephemeralNodes.range(Tuple.from(sessionId)), limit).asList()
+        .thenApply(kvs -> kvs.stream().map(kv -> ephemeralNodes.unpack(kv.getKey()).getString(1))
+            .collect(java.util.stream.Collectors.toList()));
   }
 
   public void removeNode(Transaction transaction, String zkPath, long sessionId) {

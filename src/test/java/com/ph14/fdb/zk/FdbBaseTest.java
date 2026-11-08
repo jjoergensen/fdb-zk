@@ -80,7 +80,8 @@ public class FdbBaseTest {
     fdbGetChildrenOp = new FdbGetChildrenOp(fdbGetChildrenWithStatOp);
     fdbDeleteOp = new FdbDeleteOp(fdbNodeReader, fdbNodeWriter, fdbWatchManager, fdbEphemeralNodeManager);
     fdbCheckVersionOp = new FdbCheckVersionOp(fdbNodeReader);
-    fdbMultiOp = new FdbMultiOp(fdb, fdbCreateOp, fdbDeleteOp, fdbSetDataOp, fdbCheckVersionOp);
+    fdbMultiOp = new FdbMultiOp(fdb, fdbCreateOp, fdbDeleteOp, fdbSetDataOp, fdbCheckVersionOp,
+        new FdbAcl(new org.apache.zookeeper.server.ZooKeeperServer(), fdbNodeReader, fdbNodeWriter));
 
     fdb.run(tr -> {
       FdbZkKeyspace.dir().removeIfExists(tr, Collections.singletonList(FdbPath.ROOT_PATH)).join();

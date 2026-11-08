@@ -4,10 +4,10 @@ import java.util.List;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
 
-import org.apache.zookeeper.KeeperException;
 import org.apache.zookeeper.KeeperException.APIErrorException;
 import org.apache.zookeeper.KeeperException.BadVersionException;
 import org.apache.zookeeper.KeeperException.NoNodeException;
+import org.apache.zookeeper.KeeperException;
 import org.apache.zookeeper.data.Stat;
 import org.apache.zookeeper.proto.SetDataRequest;
 import org.apache.zookeeper.proto.SetDataResponse;
@@ -19,6 +19,7 @@ import com.apple.foundationdb.directory.NoSuchDirectoryException;
 import com.google.common.collect.ImmutableMap;
 import com.google.inject.Inject;
 import com.hubspot.algebra.Result;
+import com.ph14.fdb.zk.FdbTransactionState;
 import com.ph14.fdb.zk.layer.FdbNodeReader;
 import com.ph14.fdb.zk.layer.FdbNodeWriter;
 import com.ph14.fdb.zk.layer.FdbPath;
@@ -42,10 +43,10 @@ public class FdbSetDataOp implements FdbOp<SetDataRequest, SetDataResponse> {
 
   @Override
   public CompletableFuture<Result<SetDataResponse, KeeperException>> execute(Request zkRequest, Transaction transaction, SetDataRequest request) {
-    return FdbOp.afterCommit(prepare(zkRequest, transaction, request));
+    return CompletableFuture.completedFuture(prepare(zkRequest, transaction, request));
   }
 
-  public Result<CompletableFuture<SetDataResponse>, KeeperException> prepare(Request zkRequest, Transaction transaction, SetDataRequest request) {
+  public Result<SetDataResponse, KeeperException> prepare(Request zkRequest, Transaction transaction, SetDataRequest request) {
     List<String> path = FdbPath.toFdbPath(request.getPath());
 
     final DirectorySubspace subspace;
@@ -70,22 +71,21 @@ public class FdbSetDataOp implements FdbOp<SetDataRequest, SetDataResponse> {
 
     long now = System.currentTimeMillis();
     fdbNodeWriter.writeStat(transaction, subspace, ImmutableMap.<StatKey, Long>builder()
-        .put(StatKey.MZXID, FdbNodeWriter.VERSIONSTAMP_FLAG)
+        .put(StatKey.MZXID, FdbNodeWriter.ZXID_FLAG)
         .put(StatKey.MTIME, now)
         .put(StatKey.VERSION, stat.getVersion() + 1L)
         .put(StatKey.DATA_LENGTH, (long) data.length)
         .build());
 
+    FdbTransactionState.of(transaction).eventAcls.put(request.getPath(), fdbNodeReader.readAcls(subspace, transaction).join());
     fdbWatchManager.triggerNodeUpdatedWatch(transaction, request.getPath());
 
     stat.setMtime(now);
     stat.setVersion(stat.getVersion() + 1);
     stat.setDataLength(data.length);
 
-    return Result.ok(transaction.getVersionstamp().thenApply(versionstamp -> {
-      stat.setMzxid(FdbNodeReader.zxidFromVersionstamp(versionstamp));
-      return new SetDataResponse(stat);
-    }));
+    stat.setMzxid(FdbTransactionState.of(transaction).position());
+    return Result.ok(new SetDataResponse(stat));
   }
 
 }

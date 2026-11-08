@@ -1,7 +1,9 @@
 package com.ph14.fdb.zk.layer;
 
 import java.io.IOException;
+import java.nio.ByteBuffer;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
 
@@ -13,12 +15,9 @@ import org.slf4j.LoggerFactory;
 import com.apple.foundationdb.KeyValue;
 import com.apple.foundationdb.Transaction;
 import com.apple.foundationdb.async.AsyncUtil;
-import com.apple.foundationdb.directory.DirectoryLayer;
 import com.apple.foundationdb.directory.DirectorySubspace;
 import com.apple.foundationdb.subspace.Subspace;
 import com.apple.foundationdb.tuple.ByteArrayUtil;
-import com.apple.foundationdb.tuple.Tuple;
-import com.apple.foundationdb.tuple.Versionstamp;
 import com.google.common.collect.ArrayListMultimap;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ListMultimap;
@@ -27,6 +26,7 @@ import com.google.common.primitives.Ints;
 import com.google.common.primitives.Longs;
 import com.google.inject.Inject;
 import com.ph14.fdb.zk.FdbSchemaConstants;
+import com.ph14.fdb.zk.FdbTransactionState;
 
 public class FdbNodeReader {
 
@@ -34,11 +34,6 @@ public class FdbNodeReader {
 
   @Inject
   public FdbNodeReader() {
-  }
-
-  public static long zxidFromVersionstamp(byte[] versionstamp) {
-    // Responses must match the existing tuple-encoded zxids read from storage.
-    return Longs.fromByteArray(Tuple.from(Versionstamp.complete(versionstamp)).pack());
   }
 
   public CompletableFuture<DirectorySubspace> getNodeDirectory(Transaction transaction, String zkPath) {
@@ -74,18 +69,8 @@ public class FdbNodeReader {
         getAcls(keyValuesByPrefix.get(FdbSchemaConstants.ACL_KEY)));
   }
 
-  private static final StatKey[] NON_ZXID_KEYS = java.util.Arrays.stream(StatKey.values())
-      .filter(k -> k != StatKey.CZXID && k != StatKey.MZXID && k != StatKey.PZXID)
-      .toArray(StatKey[]::new);
-
   public CompletableFuture<Stat> getNodeStat(Subspace nodeSubspace, Transaction transaction) {
-    if (FdbNodeWriter.hasPendingZxids(transaction)) {
-      // Within a multi after a write: zxids are unknown until commit and read as 0.
-      return getNodeStat(nodeSubspace, transaction, NON_ZXID_KEYS);
-    }
-    return getNodeStat(
-        nodeSubspace,
-        transaction.getRange(nodeSubspace.get(FdbSchemaConstants.STAT_KEY).range()).asList());
+    return getNodeStat(nodeSubspace, transaction, StatKey.values());
   }
 
   public CompletableFuture<Stat> getNodeStat(Subspace nodeSubspace, CompletableFuture<List<KeyValue>> keyValues) {
@@ -99,7 +84,10 @@ public class FdbNodeReader {
 
     for (StatKey statKey : statKeys) {
       byte[] key = statKey.toKey(statSubspace);
-      futures.add(transaction.get(key).thenApply(value -> new KeyValue(key, value)));
+      Long staged = FdbTransactionState.of(transaction).stats
+          .getOrDefault(ByteBuffer.wrap(nodeSubspace.pack()), Collections.emptyMap()).get(statKey);
+      futures.add(staged == null ? transaction.get(key).thenApply(value -> new KeyValue(key, value))
+          : CompletableFuture.completedFuture(new KeyValue(key, statKey.getValue(staged))));
     }
 
     return AsyncUtil.getAll(futures).thenApply(kvs -> getNodeStat(nodeSubspace, kvs));
@@ -111,6 +99,10 @@ public class FdbNodeReader {
         keyValues.stream()
             .map(KeyValue::getValue)
             .collect(ImmutableList.toImmutableList()));
+  }
+
+  public CompletableFuture<List<ACL>> readAcls(Subspace node, Transaction tr) {
+    return tr.getRange(node.get(FdbSchemaConstants.ACL_KEY).range()).asList().thenApply(this::getAcls);
   }
 
   private List<ACL> getAcls(List<KeyValue> keyValues) {

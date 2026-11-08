@@ -1,12 +1,11 @@
 package com.ph14.fdb.zk.layer;
 
 import java.io.IOException;
+import java.nio.ByteBuffer;
+import java.util.EnumMap;
 import java.util.List;
-import java.util.Collections;
-import java.util.Map;
-import java.util.Set;
-import java.util.WeakHashMap;
 import java.util.Map.Entry;
+import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
 
@@ -16,14 +15,11 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import com.apple.foundationdb.KeyValue;
-import com.apple.foundationdb.MutationType;
 import com.apple.foundationdb.Range;
 import com.apple.foundationdb.Transaction;
 import com.apple.foundationdb.directory.DirectorySubspace;
 import com.apple.foundationdb.subspace.Subspace;
-import com.apple.foundationdb.tuple.ByteArrayUtil;
 import com.apple.foundationdb.tuple.Tuple;
-import com.apple.foundationdb.tuple.Versionstamp;
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.io.ByteArrayDataOutput;
 import com.google.common.io.ByteStreams;
@@ -32,35 +28,18 @@ import com.google.common.primitives.Longs;
 import com.google.inject.Inject;
 import com.ph14.fdb.zk.ByteUtil;
 import com.ph14.fdb.zk.FdbSchemaConstants;
+import com.ph14.fdb.zk.FdbTransactionState;
 
 public class FdbNodeWriter {
 
   private static final Logger LOG = LoggerFactory.getLogger(FdbNodeWriter.class);
 
-  public static final long VERSIONSTAMP_FLAG = Long.MIN_VALUE;
-
-  // Transactions that wrote a versionstamped zxid. Reading such a key before commit fails the whole
-  // transaction (accessed_unreadable), so later ops of the same multi must not read zxid fields.
-  private static final Set<Transaction> PENDING_ZXIDS = Collections.synchronizedSet(Collections.newSetFromMap(new WeakHashMap<>()));
-
-  public static boolean hasPendingZxids(Transaction transaction) {
-    return PENDING_ZXIDS.contains(transaction);
-  }
+  public static final long ZXID_FLAG = Long.MIN_VALUE;
 
   private static final byte[] INITIAL_VERSION = Ints.toByteArray(0);
 
-  // not in use yet... need to store all values as little-endian for mutations to work
-  // unfortunately Java is big-endian by comparison which makes this a little messier
-  public static final long INCREMENT_FLAG = Long.MIN_VALUE + 1;
-  public static final long DECREMENT_FLAG = Long.MIN_VALUE + 2;
-  private static final byte[] INCREMENT_LONG = Longs.toByteArray(1);
-  private static final byte[] DECREMENT_LONG = ByteArrayUtil.encodeInt(-1);
-
-  private final byte[] versionstampValue;
-
   @Inject
   public FdbNodeWriter() {
-    this.versionstampValue = Tuple.from(Versionstamp.incomplete()).packWithVersionstamp();
   }
 
   public Stat createNewNode(Transaction transaction, Subspace nodeSubspace, FdbNode fdbNode) {
@@ -97,22 +76,19 @@ public class FdbNodeWriter {
     Subspace nodeStatSubspace = nodeSubspace.get(FdbSchemaConstants.STAT_KEY);
 
     for (Entry<StatKey, Long> entry : newValues.entrySet()) {
-      if (entry.getValue() == VERSIONSTAMP_FLAG) {
-        PENDING_ZXIDS.add(transaction);
-        transaction.mutate(MutationType.SET_VERSIONSTAMPED_VALUE, entry.getKey().toKey(nodeStatSubspace), versionstampValue);
-      } else if (entry.getValue() == INCREMENT_FLAG) {
-        transaction.mutate(MutationType.ADD, entry.getKey().toKey(nodeStatSubspace), INCREMENT_LONG);
-      } else if (entry.getValue() == DECREMENT_FLAG) {
-        transaction.mutate(MutationType.ADD, entry.getKey().toKey(nodeStatSubspace), DECREMENT_LONG);
-      } else {
-        KeyValue keyValue = entry.getKey().toKeyValue(nodeStatSubspace, entry.getValue());
-        transaction.set(keyValue.getKey(), keyValue.getValue());
-      }
+      long value = entry.getValue() == ZXID_FLAG
+          ? FdbTransactionState.of(transaction).mutate(transaction) : entry.getValue();
+      FdbTransactionState.of(transaction).stats
+          .computeIfAbsent(ByteBuffer.wrap(nodeSubspace.pack()), k -> new EnumMap<>(StatKey.class))
+          .put(entry.getKey(), value);
+      KeyValue keyValue = entry.getKey().toKeyValue(nodeStatSubspace, value);
+      transaction.set(keyValue.getKey(), keyValue.getValue());
     }
   }
 
   public CompletableFuture<Void> deleteNodeAsync(Transaction transaction, DirectorySubspace nodeSubspace) {
-    return nodeSubspace.remove(transaction);
+    return nodeSubspace.remove(transaction).thenRun(() ->
+        FdbTransactionState.of(transaction).stats.remove(ByteBuffer.wrap(nodeSubspace.pack())));
   }
 
   private Stat writeStat(Transaction transaction, Subspace nodeSubspace, FdbNode fdbNode) {
@@ -124,7 +100,8 @@ public class FdbNodeWriter {
     }
   }
 
-  private void writeACLs(Transaction transaction, Subspace nodeSubspace, List<ACL> acls) {
+  public void writeACLs(Transaction transaction, Subspace nodeSubspace, List<ACL> acls) {
+    transaction.clear(nodeSubspace.get(FdbSchemaConstants.ACL_KEY).range());
     for (int i = 0; i < acls.size(); i++) {
       try {
         ByteArrayDataOutput dataOutput = ByteStreams.newDataOutput();
@@ -145,10 +122,8 @@ public class FdbNodeWriter {
     byte[] now = Longs.toByteArray(nowMillis);
     Subspace nodeStatSubspace = nodeSubspace.get(FdbSchemaConstants.STAT_KEY);
 
-    PENDING_ZXIDS.add(transaction);
-    transaction.mutate(MutationType.SET_VERSIONSTAMPED_VALUE, StatKey.CZXID.toKey(nodeStatSubspace), versionstampValue);
-    transaction.mutate(MutationType.SET_VERSIONSTAMPED_VALUE, StatKey.MZXID.toKey(nodeStatSubspace), versionstampValue);
-    transaction.mutate(MutationType.SET_VERSIONSTAMPED_VALUE, StatKey.PZXID.toKey(nodeStatSubspace), versionstampValue);
+    long zxid = FdbTransactionState.of(transaction).mutate(transaction);
+    writeStat(transaction, nodeSubspace, Map.of(StatKey.CZXID, zxid, StatKey.MZXID, zxid, StatKey.PZXID, zxid));
 
     transaction.set(StatKey.CTIME.toKey(nodeStatSubspace), now);
     transaction.set(StatKey.MTIME.toKey(nodeStatSubspace), now);
@@ -160,6 +135,9 @@ public class FdbNodeWriter {
     transaction.set(StatKey.EPHEMERAL_OWNER.toKey(nodeStatSubspace), StatKey.EPHEMERAL_OWNER.getValue(ephemeralOwnerId.orElse(-1L)));
 
     Stat stat = new Stat();
+    stat.setCzxid(zxid);
+    stat.setMzxid(zxid);
+    stat.setPzxid(zxid);
     stat.setCtime(nowMillis);
     stat.setMtime(nowMillis);
     stat.setDataLength(data.length);
@@ -177,6 +155,7 @@ public class FdbNodeWriter {
     transaction.set(
         StatKey.MZXID.toKey(nodeStatSubspace),
         StatKey.MZXID.getValue(fdbNode.getStat().getMzxid()));
+    transaction.set(StatKey.PZXID.toKey(nodeStatSubspace), StatKey.PZXID.getValue(fdbNode.getStat().getPzxid()));
     transaction.set(
         StatKey.CTIME.toKey(nodeStatSubspace),
         StatKey.CTIME.getValue(fdbNode.getStat().getCtime()));

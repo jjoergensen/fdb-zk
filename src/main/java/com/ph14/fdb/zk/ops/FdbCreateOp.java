@@ -6,9 +6,9 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
 
 import org.apache.zookeeper.CreateMode;
-import org.apache.zookeeper.KeeperException;
 import org.apache.zookeeper.KeeperException.NoChildrenForEphemeralsException;
 import org.apache.zookeeper.KeeperException.NodeExistsException;
+import org.apache.zookeeper.KeeperException;
 import org.apache.zookeeper.data.Stat;
 import org.apache.zookeeper.proto.Create2Response;
 import org.apache.zookeeper.proto.CreateRequest;
@@ -24,6 +24,7 @@ import com.apple.foundationdb.directory.NoSuchDirectoryException;
 import com.google.common.collect.ImmutableMap;
 import com.google.inject.Inject;
 import com.hubspot.algebra.Result;
+import com.ph14.fdb.zk.FdbTransactionState;
 import com.ph14.fdb.zk.layer.FdbNode;
 import com.ph14.fdb.zk.layer.FdbNodeReader;
 import com.ph14.fdb.zk.layer.FdbNodeWriter;
@@ -58,15 +59,8 @@ public class FdbCreateOp implements FdbOp<CreateRequest, CreateResponse> {
         .mapOk(response -> new CreateResponse(response.getPath())));
   }
 
-  public Result<CompletableFuture<Create2Response>, KeeperException> prepare(Request zkRequest, Transaction transaction, CreateRequest request) {
-    return create(zkRequest, transaction, request).mapOk(response ->
-        transaction.getVersionstamp().thenApply(versionstamp -> {
-          long zxid = FdbNodeReader.zxidFromVersionstamp(versionstamp);
-          response.getStat().setCzxid(zxid);
-          response.getStat().setMzxid(zxid);
-          response.getStat().setPzxid(zxid);
-          return response;
-        }));
+  public Result<Create2Response, KeeperException> prepare(Request zkRequest, Transaction transaction, CreateRequest request) {
+    return create(zkRequest, transaction, request);
   }
 
   private Result<Create2Response, KeeperException> create(Request zkRequest, Transaction transaction, CreateRequest request) {
@@ -121,6 +115,9 @@ public class FdbCreateOp implements FdbOp<CreateRequest, CreateResponse> {
       }
     }
 
+    FdbTransactionState.of(transaction).eventAcls.put(finalZkPath, request.getAcl());
+    FdbTransactionState.of(transaction).eventAcls.put(FdbPath.toZkParentPath(finalZkPath),
+        fdbNodeReader.readAcls(parentSubspace, transaction).join());
     Stat stat = fdbNodeWriter.createNewNode(transaction, subspace, fdbNode);
 
     if (createMode.isEphemeral()) {
@@ -132,11 +129,11 @@ public class FdbCreateOp implements FdbOp<CreateRequest, CreateResponse> {
         transaction,
         parentSubspace,
         ImmutableMap.of(
-            StatKey.PZXID, FdbNodeWriter.VERSIONSTAMP_FLAG,
+            StatKey.PZXID, FdbNodeWriter.ZXID_FLAG,
             StatKey.CVERSION, parentStat.getCversion() + 1L,
             StatKey.NUM_CHILDREN, parentStat.getNumChildren() + 1L));
 
-    fdbWatchManager.triggerNodeCreatedWatch(transaction, request.getPath());
+    fdbWatchManager.triggerNodeCreatedWatch(transaction, finalZkPath);
     fdbWatchManager.triggerNodeChildrenWatch(transaction, FdbPath.toZkParentPath(request.getPath()));
 
     return Result.ok(new Create2Response(finalZkPath, stat));

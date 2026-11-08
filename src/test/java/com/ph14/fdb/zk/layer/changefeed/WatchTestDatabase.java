@@ -25,13 +25,20 @@ class WatchTestDatabase {
   private long version;
   boolean retryNextWrite;
   int retries;
+  boolean unknownNextCommit;
+  int unknownRetries;
+  Runnable afterUnknownCommit = () -> {};
   final Database database = (Database) Proxy.newProxyInstance(Database.class.getClassLoader(), new Class<?>[] {Database.class},
       (proxy, method, args) -> {
         synchronized (this) {
           if (method.getName().equals("run") || method.getName().equals("runAsync")) {
             Tx tx = new Tx();
             @SuppressWarnings("unchecked")
-            Object result = ((Function<Transaction, ?>) args[0]).apply(tx.transaction);
+            Object result;
+            try { result = ((Function<Transaction, ?>) args[0]).apply(tx.transaction); }
+            catch (RuntimeException error) {
+              throw error instanceof java.util.concurrent.CompletionException ? error : new java.util.concurrent.CompletionException(error);
+            }
             if (method.getName().equals("runAsync")) {
               CompletableFuture<?> future = (CompletableFuture<?>) result;
               if (!future.isDone()) {
@@ -46,6 +53,12 @@ class WatchTestDatabase {
               return method.invoke(proxy, args);
             }
             tx.commit();
+            if (unknownNextCommit && !tx.writes.isEmpty()) {
+              unknownNextCommit = false;
+              unknownRetries++;
+              afterUnknownCommit.run();
+              return method.invoke(proxy, args);
+            }
             return method.getName().equals("runAsync") ? CompletableFuture.completedFuture(result) : result;
           }
           throw new UnsupportedOperationException(method.getName());
@@ -75,6 +88,8 @@ class WatchTestDatabase {
             switch (method.getName()) {
               case "hashCode": return System.identityHashCode(proxy);
               case "equals": return proxy == args[0];
+              case "snapshot": return proxy;
+              case "options": return new com.apple.foundationdb.TransactionOptions((code, parameter) -> {});
               case "get": return CompletableFuture.completedFuture(view.get((byte[]) args[0]));
               case "getRange": {
                 Range range = (Range) args[0];

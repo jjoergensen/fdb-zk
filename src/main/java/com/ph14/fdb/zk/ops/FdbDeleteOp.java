@@ -4,11 +4,11 @@ import java.util.List;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
 
-import org.apache.zookeeper.KeeperException;
 import org.apache.zookeeper.KeeperException.BadVersionException;
 import org.apache.zookeeper.KeeperException.NoNodeException;
 import org.apache.zookeeper.KeeperException.NotEmptyException;
 import org.apache.zookeeper.KeeperException.SystemErrorException;
+import org.apache.zookeeper.KeeperException;
 import org.apache.zookeeper.OpResult.DeleteResult;
 import org.apache.zookeeper.data.Stat;
 import org.apache.zookeeper.proto.DeleteRequest;
@@ -17,13 +17,13 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import com.apple.foundationdb.Transaction;
-import com.apple.foundationdb.directory.DirectoryLayer;
 import com.apple.foundationdb.directory.DirectorySubspace;
 import com.apple.foundationdb.directory.NoSuchDirectoryException;
 import com.google.common.collect.ImmutableMap;
 import com.google.inject.Inject;
 import com.hubspot.algebra.Result;
 import com.hubspot.algebra.Results;
+import com.ph14.fdb.zk.FdbTransactionState;
 import com.ph14.fdb.zk.layer.FdbNodeReader;
 import com.ph14.fdb.zk.layer.FdbNodeWriter;
 import com.ph14.fdb.zk.layer.FdbPath;
@@ -91,7 +91,7 @@ public class FdbDeleteOp implements FdbOp<DeleteRequest, DeleteResult> {
 
     fdbNodeWriter.writeStat(transaction, parentNodeSubspace,
         ImmutableMap.of(
-            StatKey.PZXID, FdbNodeWriter.VERSIONSTAMP_FLAG,
+            StatKey.PZXID, FdbNodeWriter.ZXID_FLAG,
             StatKey.CVERSION, parentStat.getCversion() + 1L,
             StatKey.NUM_CHILDREN, parentStat.getNumChildren() - 1L
         ));
@@ -100,6 +100,9 @@ public class FdbDeleteOp implements FdbOp<DeleteRequest, DeleteResult> {
       fdbEphemeralNodeManager.removeNode(transaction, request.getPath(), stat.getEphemeralOwner());
     }
 
+    FdbTransactionState.of(transaction).eventAcls.put(request.getPath(), fdbNodeReader.readAcls(nodeSubspace, transaction).join());
+    FdbTransactionState.of(transaction).eventAcls.put(FdbPath.toZkParentPath(request.getPath()),
+        fdbNodeReader.readAcls(parentNodeSubspace, transaction).join());
     fdbNodeWriter.deleteNodeAsync(transaction, nodeSubspace).join();
 
     fdbWatchManager.triggerNodeDeletedWatch(transaction, request.getPath());

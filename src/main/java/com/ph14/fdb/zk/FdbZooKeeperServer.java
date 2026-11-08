@@ -1,15 +1,14 @@
 package com.ph14.fdb.zk;
 
-import java.io.File;
 import java.io.IOException;
 import java.time.Clock;
 import java.util.Collections;
 import java.util.OptionalLong;
 
 import org.apache.zookeeper.ZooDefs.Ids;
-import org.apache.zookeeper.server.SessionTracker.Session;
 import org.apache.zookeeper.server.ServerCnxn;
 import org.apache.zookeeper.server.ServerCnxnFactory;
+import org.apache.zookeeper.server.SessionTracker.Session;
 import org.apache.zookeeper.server.ZooKeeperServer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -32,6 +31,7 @@ public class FdbZooKeeperServer extends ZooKeeperServer {
 
   private static final Logger LOG = LoggerFactory.getLogger(FdbZooKeeperServer.class);
   private SessionWatchFeed sessionWatchFeed;
+  private Database reconnectDatabase;
 
   public FdbZooKeeperServer(int tickTime) throws IOException {
     super(null, null, tickTime);
@@ -56,9 +56,17 @@ public class FdbZooKeeperServer extends ZooKeeperServer {
       });
     }
 
-    getZKDatabase().setlastProcessedZxid(Long.MAX_VALUE);
+    reconnectDatabase = FDB.selectAPIVersion(630).open();
+    getZKDatabase().setlastProcessedZxid(reconnectDatabase.run(FdbTransactionState::current));
 
     super.startup();
+  }
+
+  @Override
+  public synchronized void processConnectRequest(ServerCnxn cnxn, org.apache.zookeeper.proto.ConnectRequest request)
+      throws IOException, org.apache.zookeeper.server.ClientCnxnLimitException {
+    getZKDatabase().setlastProcessedZxid(reconnectDatabase.run(FdbTransactionState::current));
+    super.processConnectRequest(cnxn, request);
   }
 
   @Override
@@ -89,7 +97,7 @@ public class FdbZooKeeperServer extends ZooKeeperServer {
     // No super call: ZooKeeper 3.9 would start its own Prep/Sync/Final pipeline (txn log, in-memory DataTree).
     // FoundationDB is the store, so every request goes to FdbRequestProcessor only.
 
-    Injector injector = Guice.createInjector(new FdbZooKeeperModule());
+    Injector injector = Guice.createInjector(new FdbZooKeeperModule(this));
 
     FdbZooKeeperImpl fdbZooKeeper = injector.getInstance(FdbZooKeeperImpl.class);
     sessionWatchFeed = injector.getInstance(SessionWatchFeed.class);
@@ -143,6 +151,7 @@ public class FdbZooKeeperServer extends ZooKeeperServer {
       sessionWatchFeed.shutdown();
     }
     super.shutdown(fullyShutDown);
+    if (reconnectDatabase != null) reconnectDatabase.close();
   }
 
 }

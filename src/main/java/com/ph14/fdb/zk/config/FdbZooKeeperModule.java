@@ -16,8 +16,15 @@ public class FdbZooKeeperModule extends AbstractModule {
   public static final String SESSION_DIRECTORY = "fdb-zk-sessions-by-id";
   public static final String SESSION_TIMEOUT_DIRECTORY = "fdb-zk-sessions-by-timeout";
 
+  private final org.apache.zookeeper.server.ZooKeeperServer server;
+
+  public FdbZooKeeperModule(org.apache.zookeeper.server.ZooKeeperServer server) {
+    this.server = server;
+  }
+
   @Override
   protected void configure() {
+    bind(org.apache.zookeeper.server.ZooKeeperServer.class).toInstance(server);
   }
 
   @Provides
