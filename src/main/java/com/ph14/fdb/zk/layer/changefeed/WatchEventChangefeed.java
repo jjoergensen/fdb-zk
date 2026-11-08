@@ -1,174 +1,202 @@
 package com.ph14.fdb.zk.layer.changefeed;
 
-import java.nio.ByteBuffer;
+import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
+import java.util.WeakHashMap;
 import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.locks.ReentrantLock;
 
-import org.apache.zookeeper.WatchedEvent;
-import org.apache.zookeeper.Watcher;
 import org.apache.zookeeper.Watcher.Event.EventType;
-import org.apache.zookeeper.Watcher.Event.KeeperState;
+import org.apache.zookeeper.Watcher.WatcherType;
 
-import com.apple.foundationdb.Database;
 import com.apple.foundationdb.KeyValue;
 import com.apple.foundationdb.MutationType;
 import com.apple.foundationdb.Range;
 import com.apple.foundationdb.Transaction;
-import com.apple.foundationdb.tuple.ByteArrayUtil;
 import com.apple.foundationdb.tuple.Tuple;
 import com.apple.foundationdb.tuple.Versionstamp;
-import com.google.common.collect.ImmutableList;
-import com.google.common.collect.Iterables;
-import com.google.inject.Inject;
 import com.google.inject.Singleton;
+import com.ph14.fdb.zk.FdbZkKeyspace;
 
 @Singleton
 public class WatchEventChangefeed {
 
-  private static final String ACTIVE_WATCH_NAMESPACE = "fdb-zk-watch-active";
+  private static final String ACTIVE_WATCH_NAMESPACE = "fdb-zk-watch-registration";
+  private static final String SESSION_WATCH_NAMESPACE = "fdb-zk-watch-session";
   private static final String CHANGEFEED_TRIGGER_NAMESPACE = "fdb-zk-watch-trigger";
   private static final String CHANGEFEED_NAMESPACE = "fdb-zk-watch-cf";
-
+  private static final String CONNECTION_NAMESPACE = "fdb-zk-watch-connection";
+  private static final String DELIVERED_NAMESPACE = "fdb-zk-watch-delivered";
   private static final byte[] EMPTY_VALUE = new byte[0];
 
-  // TODO: this can currently grow without bound, since it doesn't evict stale Watchers
-  private final ConcurrentHashMap<Watcher, ReentrantLock> changefeedLocks;
+  private final Map<Transaction, Long> eventOrdinals = new WeakHashMap<>();
 
-  private final Database database;
-
-  @Inject
-  public WatchEventChangefeed(Database database) {
-    this.database = database;
-    this.changefeedLocks = new ConcurrentHashMap<>();
+  public void addWatch(Transaction transaction, long sessionId, String path, WatcherType type) {
+    transaction.set(getActiveWatchKey(sessionId, path, type), EMPTY_VALUE);
+    transaction.set(getSessionWatchKey(sessionId, path, type), EMPTY_VALUE);
+    transaction.clear(getDeliveredKey(sessionId, path, type));
   }
 
-  /**
-   * Sets a ZK Watch on a particular ZKPath for a given event type.
-   *
-   * To do this, it:
-   *
-   * 1. Marks that the client is actively watching a given (zkPath, eventType)
-   * 2. Subscribes the client to a FDB watch for the ZK Watch Trigger
-   */
-  public CompletableFuture<Void> setZKChangefeedWatch(Transaction transaction, Watcher watcher, long sessionId, EventType eventType, String zkPath) {
-    // register as a ZK watcher for a given path + event type
-    transaction.set(getActiveWatchKey(sessionId, zkPath, eventType), EMPTY_VALUE);
-
-    // subscribe to the trigger-key, to avoid having to poll for watch events
-    CompletableFuture<Void> triggerFuture = transaction.watch(getTriggerKey(sessionId, eventType));
-    return triggerFuture.whenComplete((v, e) -> playChangefeed(sessionId, watcher));
+  public CompletableFuture<Boolean> wasNotified(Transaction transaction, long sessionId, String path, WatcherType type) {
+    // Reconnect restoration can race both the drain and its acknowledgement. Check both in one snapshot.
+    return transaction.get(getDeliveredKey(sessionId, path, type)).thenCompose(delivered -> delivered != null
+        ? CompletableFuture.completedFuture(true)
+        : transaction.getRange(getEventsRange(sessionId)).asList().thenApply(events -> events.stream().anyMatch(event -> {
+          Tuple key = FdbZkKeyspace.raw().unpack(event.getKey());
+          return Tuple.fromBytes(event.getValue()).getString(0).equals(path)
+              && matches(type, EventType.fromInt((int) key.getLong(key.size() - 1)));
+        })));
   }
 
-  /**
-   * * Add an update to the active-watcher changefeeds for a (session, watchEventType, zkPath)
-   * * Triggers all FDB watches for the changefeed
-   */
-  public CompletableFuture<Void> appendToChangefeed(Transaction transaction, EventType eventType, String zkPath) {
-    Range activeWatches = Range.startsWith(com.ph14.fdb.zk.FdbZkKeyspace.raw().pack(Tuple.from(ACTIVE_WATCH_NAMESPACE, zkPath, eventType.getIntValue())));
+  public void enqueueEvent(Transaction transaction, long sessionId, EventType eventType, String path) {
+    synchronized (transaction) {
+      enqueueEvent(transaction, sessionId, eventType, path, nextOrdinal(transaction));
+    }
+  }
 
-    return transaction.getRange(activeWatches).asList()
-        .thenApply(keyValues -> {
-          for (KeyValue keyValue : keyValues) {
-            long sessionId = com.ph14.fdb.zk.FdbZkKeyspace.raw().unpack(keyValue.getKey()).getLong(3);
+  private long nextOrdinal(Transaction transaction) {
+    synchronized (eventOrdinals) {
+      return eventOrdinals.merge(transaction, 1L, Long::sum);
+    }
+  }
 
-            Tuple changefeedKey = Tuple.from(CHANGEFEED_NAMESPACE, sessionId, Versionstamp.incomplete(), eventType.getIntValue());
-            // append the event to the changefeed of each ZK watcher
-            transaction.mutate(MutationType.SET_VERSIONSTAMPED_KEY, com.ph14.fdb.zk.FdbZkKeyspace.raw().packWithVersionstamp(changefeedKey), Tuple.from(zkPath).pack());
+  private void enqueueEvent(Transaction transaction, long sessionId, EventType eventType, String path, long ordinal) {
+    Tuple key = Tuple.from(CHANGEFEED_NAMESPACE, sessionId, Versionstamp.incomplete(), ordinal, eventType.getIntValue());
+    transaction.mutate(MutationType.SET_VERSIONSTAMPED_KEY, packWithVersionstamp(key, FdbZkKeyspace.raw().getKey()), Tuple.from(path).pack());
+    transaction.mutate(MutationType.SET_VERSIONSTAMPED_VALUE, getTriggerKey(sessionId),
+        packWithVersionstamp(Tuple.from(Versionstamp.incomplete()), null));
+  }
 
-            // update the watched trigger-key for each ZK watcher, so they know to check their changefeeds for updates
-            transaction.mutate(
-                MutationType.SET_VERSIONSTAMPED_VALUE,
-                com.ph14.fdb.zk.FdbZkKeyspace.raw().pack(Tuple.from(CHANGEFEED_TRIGGER_NAMESPACE, sessionId, eventType.getIntValue())),
-                Tuple.from(Versionstamp.incomplete()).packWithVersionstamp());
+  public CompletableFuture<Boolean> checkWatch(Transaction transaction, long sessionId, String path,
+                                                WatcherType type, boolean remove) {
+    return transaction.getRange(FdbZkKeyspace.raw().range(Tuple.from(SESSION_WATCH_NAMESPACE, sessionId, path)))
+        .asList().thenApply(registrations -> {
+          boolean found = false;
+          for (KeyValue registration : registrations) {
+            WatcherType registeredType = WatcherType.fromInt((int) FdbZkKeyspace.raw().unpack(registration.getKey()).getLong(3));
+            if (type == WatcherType.Any || type == registeredType) {
+              found = true;
+              if (remove) {
+                transaction.clear(registration.getKey());
+                transaction.clear(getActiveWatchKey(sessionId, path, registeredType));
+              }
+            }
           }
-
-          transaction.clear(activeWatches);
-          return null;
+          return found;
         });
   }
 
-  public void playChangefeed(long sessionId, Watcher watcher) {
-    synchronized (changefeedLocks) {
-      changefeedLocks.computeIfAbsent(watcher, x -> new ReentrantLock());
-    }
-
-    try {
-      // We don't want concurrent changefeed lookups to duplicate events to the same client.
-      changefeedLocks.get(watcher).lock();
-
-      Range allAvailableZKWatchEvents = Range.startsWith(com.ph14.fdb.zk.FdbZkKeyspace.raw().pack(Tuple.from(CHANGEFEED_NAMESPACE, sessionId)));
-
-      List<ChangefeedWatchEvent> watchEvents = database.readAsync(
-          transaction -> transaction.getRange(allAvailableZKWatchEvents).asList())
-          .thenApply(kvs -> kvs.stream()
-              .map(WatchEventChangefeed::toWatchEvent)
-              .collect(ImmutableList.toImmutableList()))
-          .join();
-
-      if (watchEvents.isEmpty()) {
-        return;
-      }
-
-      Set<ByteBuffer> seenCommitVersionstamps = new HashSet<>(watchEvents.size());
-      for (ChangefeedWatchEvent watchEvent : watchEvents) {
-        ByteBuffer watchCommitVersion = ByteBuffer.wrap(watchEvent.getVersionstamp().getTransactionVersion());
-
-        // in the case that one transaction committed multiple watches for different event types (e.g. getData),
-        // we only want to trigger one of the watches. TBH this might only be needed for one of the test cases, not sure
-        if (seenCommitVersionstamps.add(watchCommitVersion)) {
-          watcher.process(new WatchedEvent(watchEvent.getEventType(), KeeperState.SyncConnected, watchEvent.getZkPath()));
+  public CompletableFuture<Void> appendToChangefeed(Transaction transaction, EventType eventType, String path) {
+    // Purges can emit concurrently in one transaction. Serialize reads and consumption of one-shot registrations.
+    synchronized (transaction) {
+      long ordinal = nextOrdinal(transaction);
+      List<KeyValue> registrations = new ArrayList<>(transaction.getRange(
+          FdbZkKeyspace.raw().range(Tuple.from(ACTIVE_WATCH_NAMESPACE, path))).asList().join());
+      if (eventType != EventType.NodeChildrenChanged) {
+        String ancestor = path;
+        while (!ancestor.equals("/")) {
+          int slash = ancestor.lastIndexOf('/');
+          ancestor = slash == 0 ? "/" : ancestor.substring(0, slash);
+          registrations.addAll(transaction.getRange(FdbZkKeyspace.raw().range(
+              Tuple.from(ACTIVE_WATCH_NAMESPACE, ancestor, WatcherType.PersistentRecursive.getIntValue()))).asList().join());
         }
       }
 
-      Versionstamp greatestVersionstamp = Iterables.getLast(watchEvents).getVersionstamp();
-      database.run(transaction -> {
-        // if watch entries were written between reading and executing, we want to only remove entries up to what we just had
-        byte[] lastProcessedEvent = ByteArrayUtil.strinc(com.ph14.fdb.zk.FdbZkKeyspace.raw().pack(Tuple.from(CHANGEFEED_NAMESPACE, sessionId, greatestVersionstamp)));
-        transaction.clear(allAvailableZKWatchEvents.begin, lastProcessedEvent);
+      Set<Long> recipients = new HashSet<>();
+      for (KeyValue registration : registrations) {
+        Tuple key = FdbZkKeyspace.raw().unpack(registration.getKey());
+        String watchedPath = key.getString(1);
+        WatcherType type = WatcherType.fromInt((int) key.getLong(2));
+        long sessionId = key.getLong(3);
+        if (matches(type, eventType)) {
+          recipients.add(sessionId);
+          if (type == WatcherType.Data || type == WatcherType.Children) {
+            transaction.clear(registration.getKey());
+            transaction.clear(getSessionWatchKey(sessionId, watchedPath, type));
+          }
+        }
+      }
 
-        return null;
-      });
-    } finally {
-      changefeedLocks.get(watcher).unlock();
+      for (long sessionId : recipients) {
+        // All matching registrations share one notification, but distinct mutations retain their ordinals.
+        enqueueEvent(transaction, sessionId, eventType, path, ordinal);
+      }
+      return CompletableFuture.completedFuture(null);
+    }
+  }
+
+  byte[] packWithVersionstamp(Tuple tuple, byte[] prefix) {
+    return tuple.packWithVersionstamp(prefix);
+  }
+
+  private static boolean matches(WatcherType type, EventType eventType) {
+    switch (type) {
+      case Data:
+        return eventType == EventType.NodeCreated || eventType == EventType.NodeDataChanged || eventType == EventType.NodeDeleted;
+      case Children:
+        return eventType == EventType.NodeChildrenChanged || eventType == EventType.NodeDeleted;
+      case Persistent:
+        return true;
+      case PersistentRecursive:
+        return eventType != EventType.NodeChildrenChanged;
+      default:
+        return false;
     }
   }
 
   public CompletableFuture<Void> clearAllWatchesForSession(Transaction transaction, long sessionId) {
-    Range allAvailableZKWatchEvents = Range.startsWith(com.ph14.fdb.zk.FdbZkKeyspace.raw().pack(Tuple.from(CHANGEFEED_NAMESPACE, sessionId)));
-
-    return transaction.getRange(allAvailableZKWatchEvents).asList()
-        .thenApply(kvs -> {
-          kvs.stream()
-              .map(WatchEventChangefeed::toWatchEvent)
-              .forEach(watchEvent -> {
-                transaction.clear(getActiveWatchKey(sessionId, watchEvent.getZkPath(), watchEvent.getEventType()));
-                transaction.clear(getTriggerKey(sessionId, watchEvent.getEventType()));
-              });
-
-          transaction.clear(allAvailableZKWatchEvents);
-          return null;
-        });
+    Range registrations = FdbZkKeyspace.raw().range(Tuple.from(SESSION_WATCH_NAMESPACE, sessionId));
+    return transaction.getRange(registrations).asList().thenAccept(keys -> {
+      for (KeyValue keyValue : keys) {
+        Tuple key = FdbZkKeyspace.raw().unpack(keyValue.getKey());
+        transaction.clear(getActiveWatchKey(sessionId, key.getString(2), WatcherType.fromInt((int) key.getLong(3))));
+      }
+      transaction.clear(registrations);
+      transaction.clear(getEventsRange(sessionId));
+      transaction.clear(getTriggerKey(sessionId));
+      transaction.clear(getConnectionKey(sessionId));
+      transaction.clear(getDeliveredRange(sessionId));
+    });
   }
 
-  private static byte[] getActiveWatchKey(long sessionId, String zkPath, EventType eventType) {
-    return com.ph14.fdb.zk.FdbZkKeyspace.raw().pack(Tuple.from(ACTIVE_WATCH_NAMESPACE, zkPath, eventType.getIntValue(), sessionId));
+  static Range getEventsRange(long sessionId) {
+    return FdbZkKeyspace.raw().range(Tuple.from(CHANGEFEED_NAMESPACE, sessionId));
   }
 
-  private static byte[] getTriggerKey(long sessionId, EventType eventType) {
-    return com.ph14.fdb.zk.FdbZkKeyspace.raw().pack(Tuple.from(CHANGEFEED_TRIGGER_NAMESPACE, sessionId, eventType.getIntValue()));
+  static byte[] getTriggerKey(long sessionId) {
+    return FdbZkKeyspace.raw().pack(Tuple.from(CHANGEFEED_TRIGGER_NAMESPACE, sessionId));
   }
 
-  private static ChangefeedWatchEvent toWatchEvent(KeyValue keyValue) {
-    Tuple tuple = com.ph14.fdb.zk.FdbZkKeyspace.raw().unpack(keyValue.getKey());
-    Versionstamp versionstamp = tuple.getVersionstamp(2);
-    EventType eventType = EventType.fromInt((int) tuple.getLong(3)); // tuple layer upcasts ints to longs
-    String zkPath = Tuple.fromBytes(keyValue.getValue()).getString(0);
-
-    return new ChangefeedWatchEvent(versionstamp, eventType, zkPath);
+  static byte[] getConnectionKey(long sessionId) {
+    return FdbZkKeyspace.raw().pack(Tuple.from(CONNECTION_NAMESPACE, sessionId));
   }
 
+  static Range getDeliveredRange(long sessionId) {
+    return FdbZkKeyspace.raw().range(Tuple.from(DELIVERED_NAMESPACE, sessionId));
+  }
+
+  static void recordDelivery(Transaction transaction, long sessionId, KeyValue event) {
+    Tuple key = FdbZkKeyspace.raw().unpack(event.getKey());
+    EventType type = EventType.fromInt((int) key.getLong(key.size() - 1));
+    String path = Tuple.fromBytes(event.getValue()).getString(0);
+    for (WatcherType watchType : new WatcherType[] {WatcherType.Data, WatcherType.Children}) {
+      if (matches(watchType, type) && transaction.get(getSessionWatchKey(sessionId, path, watchType)).join() == null) {
+        transaction.set(getDeliveredKey(sessionId, path, watchType), EMPTY_VALUE);
+      }
+    }
+  }
+
+  private static byte[] getDeliveredKey(long sessionId, String path, WatcherType type) {
+    return FdbZkKeyspace.raw().pack(Tuple.from(DELIVERED_NAMESPACE, sessionId, path, type.getIntValue()));
+  }
+
+  private static byte[] getActiveWatchKey(long sessionId, String path, WatcherType type) {
+    return FdbZkKeyspace.raw().pack(Tuple.from(ACTIVE_WATCH_NAMESPACE, path, type.getIntValue(), sessionId));
+  }
+
+  private static byte[] getSessionWatchKey(long sessionId, String path, WatcherType type) {
+    return FdbZkKeyspace.raw().pack(Tuple.from(SESSION_WATCH_NAMESPACE, sessionId, path, type.getIntValue()));
+  }
 }

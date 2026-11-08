@@ -12,7 +12,6 @@ import org.apache.zookeeper.proto.GetChildren2Response;
 import org.apache.zookeeper.server.Request;
 
 import com.apple.foundationdb.Transaction;
-import com.apple.foundationdb.directory.DirectoryLayer;
 import com.apple.foundationdb.directory.NoSuchDirectoryException;
 import com.google.inject.Inject;
 import com.hubspot.algebra.Result;
@@ -36,15 +35,12 @@ public class FdbGetChildrenWithStatOp implements FdbOp<GetChildren2Request, GetC
   public CompletableFuture<Result<GetChildren2Response, KeeperException>> execute(Request zkRequest, Transaction transaction, GetChildren2Request request) {
     List<String> path = FdbPath.toFdbPath(request.getPath());
 
-    fdbWatchManager.checkForWatches(zkRequest.sessionId, zkRequest.cnxn);
-
     try {
       Stat stat = fdbNodeReader.getNodeStat(com.ph14.fdb.zk.FdbZkKeyspace.dir().open(transaction, path).join(), transaction).join();
       List<String> childrenDirectoryNames = com.ph14.fdb.zk.FdbZkKeyspace.dir().list(transaction, path).join();
 
       if (request.getWatch()) {
-        fdbWatchManager.addNodeChildrenWatch(transaction, request.getPath(), zkRequest.cnxn, zkRequest.sessionId);
-        fdbWatchManager.addNodeDeletedWatch(transaction, request.getPath(), zkRequest.cnxn, zkRequest.sessionId);
+        fdbWatchManager.addChildWatch(transaction, request.getPath(), zkRequest.sessionId);
       }
 
       return CompletableFuture.completedFuture(Result.ok(new GetChildren2Response(childrenDirectoryNames, stat)));

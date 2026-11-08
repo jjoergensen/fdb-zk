@@ -109,9 +109,8 @@ public class FdbGetChildrenWithStatOpTest extends FdbBaseTest {
   @Test
   public void itPlaysPendingWatchesBeforeReturning() throws InterruptedException {
     fdb.run(tr -> {
-      CompletableFuture<Void> fdbWatch = watchEventChangefeed.setZKChangefeedWatch(tr, SERVER_CNXN, REQUEST.sessionId, EventType.NodeCreated, "abc");
-      fdbWatch.cancel(true);
-      watchEventChangefeed.appendToChangefeed(tr, EventType.NodeCreated, "abc").join();
+      watchEventChangefeed.addWatch(tr, REQUEST.sessionId, "/abc", org.apache.zookeeper.Watcher.WatcherType.Data);
+      watchEventChangefeed.appendToChangefeed(tr, EventType.NodeCreated, "/abc").join();
       return null;
     });
 
@@ -122,7 +121,7 @@ public class FdbGetChildrenWithStatOpTest extends FdbBaseTest {
     WatchedEvent event = SERVER_CNXN.getWatchedEvents().poll(1, TimeUnit.SECONDS);
     assertThat(event).isNotNull();
     assertThat(event.getType()).isEqualTo(EventType.NodeCreated);
-    assertThat(event.getPath()).isEqualTo("abc");
+    assertThat(event.getPath()).isEqualTo("/abc");
   }
 
 }

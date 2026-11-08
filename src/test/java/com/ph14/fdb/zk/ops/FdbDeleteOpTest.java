@@ -111,7 +111,7 @@ public class FdbDeleteOpTest extends FdbBaseTest {
     assertThat(exists.unwrapOrElseThrow().getStat().getNumChildren()).isEqualTo(1);
     long initialPzxid = exists.unwrapOrElseThrow().getStat().getPzxid();
 
-    FdbDeleteOp throwingFdbDeleteOp = new FdbDeleteOp(fdbNodeReader, fdbNodeWriter, new ThrowingWatchManager(new WatchEventChangefeed(fdb)), fdbEphemeralNodeManager);
+    FdbDeleteOp throwingFdbDeleteOp = new FdbDeleteOp(fdbNodeReader, fdbNodeWriter, new ThrowingWatchManager(new WatchEventChangefeed()), fdbEphemeralNodeManager);
     assertThatThrownBy(() -> fdb.run(tr -> throwingFdbDeleteOp.execute(REQUEST, tr, new DeleteRequest(SUBPATH, 0))))
         .hasCauseInstanceOf(RuntimeException.class);
 
@@ -149,8 +149,9 @@ public class FdbDeleteOpTest extends FdbBaseTest {
       countDownLatch.countDown();
     };
 
+    sessionWatchFeed.connect(REQUEST.sessionId, watcher, () -> true).run();
     fdb.run(tr -> {
-      fdbWatchManager.addNodeDeletedWatch(tr, BASE_PATH, watcher, REQUEST.sessionId);
+      fdbWatchManager.addDataWatch(tr, BASE_PATH, REQUEST.sessionId);
       return null;
     });
 
@@ -180,8 +181,9 @@ public class FdbDeleteOpTest extends FdbBaseTest {
     assertThat(result.unwrapOrElseThrow()).isEqualTo(new CreateResponse(BASE_PATH));
     assertThat(SERVER_CNXN.getWatchedEvents().peek()).isNull();
 
+    sessionWatchFeed.connect(REQUEST.sessionId, watcher, () -> true).run();
     fdb.run(tr -> {
-      fdbWatchManager.addNodeChildrenWatch(tr, "/", watcher, REQUEST.sessionId);
+      fdbWatchManager.addChildWatch(tr, "/", REQUEST.sessionId);
       return null;
     });
 

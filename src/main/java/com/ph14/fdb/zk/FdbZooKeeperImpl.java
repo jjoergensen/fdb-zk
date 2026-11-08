@@ -10,6 +10,8 @@ import org.apache.zookeeper.KeeperException.SessionExpiredException;
 import org.apache.zookeeper.KeeperException.SessionMovedException;
 import org.apache.zookeeper.MultiOperationRecord;
 import org.apache.zookeeper.ZooDefs.OpCode;
+import org.apache.zookeeper.proto.AddWatchRequest;
+import org.apache.zookeeper.proto.CheckWatchesRequest;
 import org.apache.zookeeper.proto.CheckVersionRequest;
 import org.apache.zookeeper.proto.CreateRequest;
 import org.apache.zookeeper.proto.DeleteRequest;
@@ -17,8 +19,10 @@ import org.apache.zookeeper.proto.ExistsRequest;
 import org.apache.zookeeper.proto.GetChildren2Request;
 import org.apache.zookeeper.proto.GetChildrenRequest;
 import org.apache.zookeeper.proto.GetDataRequest;
+import org.apache.zookeeper.proto.RemoveWatchesRequest;
 import org.apache.zookeeper.proto.SetDataRequest;
 import org.apache.zookeeper.proto.SetWatches;
+import org.apache.zookeeper.proto.SetWatches2;
 import org.apache.zookeeper.proto.SyncRequest;
 import org.apache.zookeeper.proto.SyncResponse;
 import org.apache.zookeeper.proto.WhoAmIResponse;
@@ -41,6 +45,7 @@ import com.ph14.fdb.zk.ops.FdbMultiOp;
 import com.ph14.fdb.zk.ops.FdbOp;
 import com.ph14.fdb.zk.ops.FdbSetDataOp;
 import com.ph14.fdb.zk.ops.FdbSetWatchesOp;
+import com.ph14.fdb.zk.ops.FdbWatchOp;
 import com.ph14.fdb.zk.session.FdbSessionManager;
 
 public class FdbZooKeeperImpl {
@@ -64,6 +69,10 @@ public class FdbZooKeeperImpl {
               OpCode.getChildren,
               OpCode.getChildren2, // includes stat of node
               OpCode.setWatches,
+              OpCode.setWatches2,
+              OpCode.addWatch,
+              OpCode.checkWatches,
+              OpCode.removeWatches,
               OpCode.check,
               OpCode.whoAmI,
 
@@ -86,6 +95,7 @@ public class FdbZooKeeperImpl {
   private final FdbGetChildrenWithStatOp fdbGetChildrenWithStatOp;
   private final FdbDeleteOp fdbDeleteOp;
   private final FdbSetWatchesOp fdbSetWatchesOp;
+  private final FdbWatchOp fdbWatchOp;
   private final FdbMultiOp fdbMultiOp;
   private final com.ph14.fdb.zk.session.FdbSessionDataPurger fdbSessionDataPurger;
 
@@ -103,6 +113,7 @@ public class FdbZooKeeperImpl {
                           FdbGetChildrenWithStatOp fdbGetChildrenWithStatOp,
                           FdbDeleteOp fdbDeleteOp,
                           FdbSetWatchesOp fdbSetWatchesOp,
+                          FdbWatchOp fdbWatchOp,
                           FdbMultiOp fdbMultiOp,
                           com.ph14.fdb.zk.session.FdbSessionDataPurger fdbSessionDataPurger) {
     this.fdbSessionDataPurger = fdbSessionDataPurger;
@@ -117,6 +128,7 @@ public class FdbZooKeeperImpl {
     this.fdbGetChildrenWithStatOp = fdbGetChildrenWithStatOp;
     this.fdbDeleteOp = fdbDeleteOp;
     this.fdbSetWatchesOp = fdbSetWatchesOp;
+    this.fdbWatchOp = fdbWatchOp;
     this.fdbMultiOp = fdbMultiOp;
   }
 
@@ -200,12 +212,23 @@ public class FdbZooKeeperImpl {
 
       case OpCode.setWatches:
         SetWatches setWatches = request.readRequestRecord(SetWatches::new);
-        return fdb.runAsync(tr -> fdbSetWatchesOp.execute(request, tr, setWatches))
-            .thenApply(result -> result.mapOk(events -> {
-              events.forEach(request.cnxn::process);
-              return Boolean.TRUE;
-            }))
-            .join();
+        return fdb.runAsync(tr -> fdbSetWatchesOp.execute(request, tr, setWatches)).join();
+
+      case OpCode.setWatches2:
+        SetWatches2 setWatches2 = request.readRequestRecord(SetWatches2::new);
+        return fdb.runAsync(tr -> fdbSetWatchesOp.execute(request, tr, setWatches2)).join();
+
+      case OpCode.addWatch:
+        AddWatchRequest addWatch = request.readRequestRecord(AddWatchRequest::new);
+        return fdb.runAsync(tr -> fdbWatchOp.execute(request, tr, addWatch)).join();
+
+      case OpCode.checkWatches:
+        CheckWatchesRequest checkWatches = request.readRequestRecord(CheckWatchesRequest::new);
+        return fdb.runAsync(tr -> fdbWatchOp.execute(request, tr, checkWatches)).join();
+
+      case OpCode.removeWatches:
+        RemoveWatchesRequest removeWatches = request.readRequestRecord(RemoveWatchesRequest::new);
+        return fdb.runAsync(tr -> fdbWatchOp.execute(request, tr, removeWatches)).join();
 
       case OpCode.whoAmI:
         return Result.ok(new WhoAmIResponse(AuthUtil.getClientInfos(request.authInfo)));

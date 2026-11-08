@@ -12,7 +12,6 @@ import org.apache.zookeeper.server.Request;
 
 import com.apple.foundationdb.Range;
 import com.apple.foundationdb.Transaction;
-import com.apple.foundationdb.directory.DirectoryLayer;
 import com.apple.foundationdb.directory.DirectorySubspace;
 import com.apple.foundationdb.directory.NoSuchDirectoryException;
 import com.google.inject.Inject;
@@ -39,8 +38,6 @@ public class FdbExistsOp implements FdbOp<ExistsRequest, ExistsResponse> {
   public CompletableFuture<Result<ExistsResponse, KeeperException>> execute(Request zkRequest, Transaction transaction, ExistsRequest request) {
     List<String> path = FdbPath.toFdbPath(request.getPath());
 
-    fdbWatchManager.checkForWatches(zkRequest.sessionId, zkRequest.cnxn);
-
     final DirectorySubspace subspace;
     try {
       subspace = com.ph14.fdb.zk.FdbZkKeyspace.dir().open(transaction, path).join();
@@ -50,15 +47,14 @@ public class FdbExistsOp implements FdbOp<ExistsRequest, ExistsResponse> {
       FdbNode fdbNode = fdbNodeReader.getNode(subspace, transaction.getRange(statKeyRange).asList().join());
 
       if (request.getWatch()) {
-        fdbWatchManager.addNodeDataUpdatedWatch(transaction, request.getPath(), zkRequest.cnxn, zkRequest.sessionId);
-        fdbWatchManager.addNodeDeletedWatch(transaction, request.getPath(), zkRequest.cnxn, zkRequest.sessionId);
+        fdbWatchManager.addDataWatch(transaction, request.getPath(), zkRequest.sessionId);
       }
 
       return CompletableFuture.completedFuture(Result.ok(new ExistsResponse(fdbNode.getStat())));
     } catch (CompletionException e) {
       if (e.getCause() instanceof NoSuchDirectoryException) {
         if (request.getWatch()) {
-          fdbWatchManager.addNodeCreatedWatch(transaction, request.getPath(), zkRequest.cnxn, zkRequest.sessionId);
+          fdbWatchManager.addDataWatch(transaction, request.getPath(), zkRequest.sessionId);
         }
 
         return CompletableFuture.completedFuture(Result.err(new NoNodeException(request.getPath())));

@@ -11,7 +11,7 @@ import org.apache.zookeeper.data.Stat;
 import org.junit.Test;
 
 import com.apple.foundationdb.KeyValue;
-import com.apple.foundationdb.directory.DirectoryLayer;
+import com.ph14.fdb.zk.FdbZkKeyspace;
 import com.apple.foundationdb.directory.DirectorySubspace;
 import com.google.common.base.Strings;
 import com.ph14.fdb.zk.FdbBaseTest;
@@ -31,7 +31,7 @@ public class FdbNodeSerialization extends FdbBaseTest {
             new ACL(456, new Id("another schema", "!id"))
         ));
 
-    DirectorySubspace subspace = DirectoryLayer.getDefault().create(transaction, fdbNode.getFdbPath()).join();
+    DirectorySubspace subspace = FdbZkKeyspace.dir().create(transaction, fdbNode.getFdbPath()).join();
 
     fdbNodeWriter.createNewNode(transaction, subspace, fdbNode);
 

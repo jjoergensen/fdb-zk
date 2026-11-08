@@ -11,7 +11,6 @@ import org.junit.Before;
 import com.apple.foundationdb.Database;
 import com.apple.foundationdb.FDB;
 import com.apple.foundationdb.Transaction;
-import com.apple.foundationdb.directory.DirectoryLayer;
 import com.apple.foundationdb.directory.DirectorySubspace;
 import com.ph14.fdb.zk.layer.FdbNode;
 import com.ph14.fdb.zk.layer.FdbNodeReader;
@@ -19,6 +18,7 @@ import com.ph14.fdb.zk.layer.FdbNodeWriter;
 import com.ph14.fdb.zk.layer.FdbPath;
 import com.ph14.fdb.zk.layer.FdbWatchManager;
 import com.ph14.fdb.zk.layer.changefeed.WatchEventChangefeed;
+import com.ph14.fdb.zk.layer.changefeed.SessionWatchFeed;
 import com.ph14.fdb.zk.layer.ephemeral.FdbEphemeralNodeManager;
 import com.ph14.fdb.zk.ops.FdbCheckVersionOp;
 import com.ph14.fdb.zk.ops.FdbCreateOp;
@@ -40,6 +40,7 @@ public class FdbBaseTest {
   protected FdbNodeWriter fdbNodeWriter;
   protected FdbWatchManager fdbWatchManager;
   protected WatchEventChangefeed watchEventChangefeed;
+  protected SessionWatchFeed sessionWatchFeed;
   protected FdbNodeReader fdbNodeReader;
   protected FdbEphemeralNodeManager fdbEphemeralNodeManager;
 
@@ -60,11 +61,12 @@ public class FdbBaseTest {
   public void setUp() {
     this.fdb = FDB.selectAPIVersion(630).open();
 
+    FdbZkKeyspace.init(fdb);
     SERVER_CNXN.clearWatchedEvents();
     REQUEST = new Request(SERVER_CNXN, System.nanoTime(), 1, 2, null, Collections.emptyList());
 
     fdbNodeWriter = new FdbNodeWriter();
-    watchEventChangefeed = new WatchEventChangefeed(fdb);
+    watchEventChangefeed = new WatchEventChangefeed();
     fdbWatchManager = new FdbWatchManager(watchEventChangefeed);
     fdbNodeReader = new FdbNodeReader();
     fdbEphemeralNodeManager = new FdbEphemeralNodeManager();
@@ -81,19 +83,23 @@ public class FdbBaseTest {
     fdbMultiOp = new FdbMultiOp(fdb, fdbCreateOp, fdbDeleteOp, fdbSetDataOp, fdbCheckVersionOp);
 
     fdb.run(tr -> {
-      DirectoryLayer.getDefault().removeIfExists(tr, Collections.singletonList(FdbPath.ROOT_PATH)).join();
-      DirectorySubspace rootSubspace = DirectoryLayer.getDefault().create(tr, Collections.singletonList(FdbPath.ROOT_PATH)).join();
+      FdbZkKeyspace.dir().removeIfExists(tr, Collections.singletonList(FdbPath.ROOT_PATH)).join();
+      DirectorySubspace rootSubspace = FdbZkKeyspace.dir().create(tr, Collections.singletonList(FdbPath.ROOT_PATH)).join();
 
       fdbNodeWriter.createNewNode(tr, rootSubspace, new FdbNode("/", null, new byte[0], Ids.OPEN_ACL_UNSAFE));
 
       return null;
     });
 
+    sessionWatchFeed = new SessionWatchFeed(fdb);
+    sessionWatchFeed.connect(REQUEST.sessionId, SERVER_CNXN, () -> true).run();
     this.transaction = fdb.createTransaction();
   }
 
   @After
   public void tearDown() {
+    sessionWatchFeed.shutdown();
+    fdb.runAsync(tr -> watchEventChangefeed.clearAllWatchesForSession(tr, REQUEST.sessionId)).join();
     this.transaction.cancel();
     this.fdb.close();
   }

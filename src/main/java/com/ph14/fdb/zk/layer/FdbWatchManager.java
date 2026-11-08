@@ -1,13 +1,15 @@
 package com.ph14.fdb.zk.layer;
 
-import org.apache.zookeeper.Watcher;
+import java.util.concurrent.CompletableFuture;
+
+import org.apache.zookeeper.AddWatchMode;
 import org.apache.zookeeper.Watcher.Event.EventType;
+import org.apache.zookeeper.Watcher.WatcherType;
 
 import com.apple.foundationdb.Transaction;
 import com.google.inject.Inject;
 import com.ph14.fdb.zk.layer.changefeed.WatchEventChangefeed;
 
-// TODO: Still need this class?
 public class FdbWatchManager {
 
   private final WatchEventChangefeed watchChangefeed;
@@ -15,10 +17,6 @@ public class FdbWatchManager {
   @Inject
   public FdbWatchManager(WatchEventChangefeed watchChangefeed) {
     this.watchChangefeed = watchChangefeed;
-  }
-
-  public void checkForWatches(long sessionId, Watcher watcher) {
-    watchChangefeed.playChangefeed(sessionId, watcher);
   }
 
   public void triggerNodeCreatedWatch(Transaction transaction, String zkPath) {
@@ -37,20 +35,39 @@ public class FdbWatchManager {
     watchChangefeed.appendToChangefeed(transaction, EventType.NodeChildrenChanged, zkPath).join();
   }
 
-  public void addNodeCreatedWatch(Transaction transaction, String zkPath, Watcher watcher, long sessionId) {
-    watchChangefeed.setZKChangefeedWatch(transaction, watcher, sessionId, EventType.NodeCreated, zkPath);
+  public void addDataWatch(Transaction transaction, String zkPath, long sessionId) {
+    watchChangefeed.addWatch(transaction, sessionId, zkPath, WatcherType.Data);
   }
 
-  public void addNodeDataUpdatedWatch(Transaction transaction, String zkPath, Watcher watcher, long sessionId) {
-    watchChangefeed.setZKChangefeedWatch(transaction, watcher, sessionId, EventType.NodeDataChanged, zkPath);
+  public void addChildWatch(Transaction transaction, String zkPath, long sessionId) {
+    watchChangefeed.addWatch(transaction, sessionId, zkPath, WatcherType.Children);
   }
 
-  public void addNodeDeletedWatch(Transaction transaction, String zkPath, Watcher watcher, long sessionId) {
-    watchChangefeed.setZKChangefeedWatch(transaction, watcher, sessionId, EventType.NodeDeleted, zkPath);
+  public void addPersistentWatch(Transaction transaction, String zkPath, long sessionId, int mode) {
+    if (mode == AddWatchMode.PERSISTENT.getMode()) {
+      watchChangefeed.addWatch(transaction, sessionId, zkPath, WatcherType.Persistent);
+    } else if (mode == AddWatchMode.PERSISTENT_RECURSIVE.getMode()) {
+      watchChangefeed.addWatch(transaction, sessionId, zkPath, WatcherType.PersistentRecursive);
+    } else {
+      throw new IllegalArgumentException("Unknown watch mode: " + mode);
+    }
   }
 
-  public void addNodeChildrenWatch(Transaction transaction, String zkPath, Watcher watcher, long sessionId) {
-    watchChangefeed.setZKChangefeedWatch(transaction, watcher, sessionId, EventType.NodeChildrenChanged, zkPath);
+  public CompletableFuture<Boolean> checkWatch(Transaction transaction, String zkPath, long sessionId, WatcherType type, boolean remove) {
+    return watchChangefeed.checkWatch(transaction, sessionId, zkPath, type, remove);
   }
 
+  public CompletableFuture<Boolean> wasNotified(Transaction transaction, String zkPath, long sessionId, WatcherType type) {
+    return watchChangefeed.wasNotified(transaction, sessionId, zkPath, type);
+  }
+
+  public void restoreEvent(Transaction transaction, String zkPath, long sessionId, EventType type) {
+    if (type != EventType.NodeChildrenChanged) {
+      checkWatch(transaction, zkPath, sessionId, WatcherType.Data, true).join();
+    }
+    if (type == EventType.NodeChildrenChanged || type == EventType.NodeDeleted) {
+      checkWatch(transaction, zkPath, sessionId, WatcherType.Children, true).join();
+    }
+    watchChangefeed.enqueueEvent(transaction, sessionId, type, zkPath);
+  }
 }

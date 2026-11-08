@@ -15,7 +15,7 @@ import org.apache.zookeeper.KeeperException.SessionMovedException;
 import org.junit.Before;
 import org.junit.Test;
 
-import com.apple.foundationdb.directory.DirectoryLayer;
+import com.ph14.fdb.zk.FdbZkKeyspace;
 import com.ph14.fdb.zk.FdbBaseTest;
 
 public class FdbSessionManagerTest extends FdbBaseTest {
@@ -24,8 +24,8 @@ public class FdbSessionManagerTest extends FdbBaseTest {
   @Before
   public void setUp() {
     super.setUp();
-    fdb.run(tr -> DirectoryLayer.getDefault().remove(tr, SESSION_DIRECTORY).join());
-    fdb.run(tr -> DirectoryLayer.getDefault().remove(tr, SESSION_TIMEOUT_DIRECTORY).join());
+    fdb.run(tr -> FdbZkKeyspace.dir().removeIfExists(tr, SESSION_DIRECTORY).join());
+    fdb.run(tr -> FdbZkKeyspace.dir().removeIfExists(tr, SESSION_TIMEOUT_DIRECTORY).join());
   }
 
   @Test

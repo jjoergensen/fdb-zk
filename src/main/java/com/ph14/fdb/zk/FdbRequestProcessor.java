@@ -14,6 +14,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import com.hubspot.algebra.Result;
+import com.ph14.fdb.zk.layer.changefeed.SessionWatchFeed;
 
 public class FdbRequestProcessor implements RequestProcessor {
 
@@ -22,17 +23,24 @@ public class FdbRequestProcessor implements RequestProcessor {
   private final FdbZooKeeperImpl fdbZooKeeper;
   private final ZooKeeperServer zooKeeperServer;
   private final RequestProcessor defaultRequestProcessor;
+  private final SessionWatchFeed sessionWatchFeed;
 
   public FdbRequestProcessor(RequestProcessor defaultRequestProcessor,
                              ZooKeeperServer zooKeeperServer,
-                             FdbZooKeeperImpl fdbZooKeeper) {
+                             FdbZooKeeperImpl fdbZooKeeper,
+                             SessionWatchFeed sessionWatchFeed) {
     this.defaultRequestProcessor = defaultRequestProcessor;
     this.zooKeeperServer = zooKeeperServer;
     this.fdbZooKeeper = fdbZooKeeper;
+    this.sessionWatchFeed = sessionWatchFeed;
   }
 
   @Override
   public void processRequest(Request request) {
+    sessionWatchFeed.processRequest(request.sessionId, () -> processSessionRequest(request));
+  }
+
+  private void processSessionRequest(Request request) {
     try {
       LOG.debug("Received request in Fdb Request Processor: {}", request);
       Result<?, KeeperException> result;

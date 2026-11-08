@@ -36,8 +36,6 @@ public class FdbGetDataOp implements FdbOp<GetDataRequest, GetDataResponse> {
   public CompletableFuture<Result<GetDataResponse, KeeperException>> execute(Request zkRequest, Transaction transaction, GetDataRequest request) {
     List<String> path = FdbPath.toFdbPath(request.getPath());
 
-    fdbWatchManager.checkForWatches(zkRequest.sessionId, zkRequest.cnxn);
-
     final DirectorySubspace subspace;
     try {
       subspace = com.ph14.fdb.zk.FdbZkKeyspace.dir().open(transaction, path).join();
@@ -53,8 +51,7 @@ public class FdbGetDataOp implements FdbOp<GetDataRequest, GetDataResponse> {
     CompletableFuture<FdbNode> fdbNode = fdbNodeReader.getNode(subspace, transaction);
 
     if (request.getWatch()) {
-      fdbWatchManager.addNodeDataUpdatedWatch(transaction, request.getPath(), zkRequest.cnxn, zkRequest.sessionId);
-      fdbWatchManager.addNodeDeletedWatch(transaction, request.getPath(), zkRequest.cnxn, zkRequest.sessionId);
+      fdbWatchManager.addDataWatch(transaction, request.getPath(), zkRequest.sessionId);
     }
 
     return CompletableFuture.completedFuture(Result.ok(new GetDataResponse(fdbNode.join().getData(), fdbNode.join().getStat())));

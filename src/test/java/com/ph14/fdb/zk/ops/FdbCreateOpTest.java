@@ -155,8 +155,9 @@ public class FdbCreateOpTest extends FdbBaseTest {
       countDownLatch.countDown();
     };
 
+    sessionWatchFeed.connect(REQUEST.sessionId, watcher, () -> true).run();
     fdb.run(tr -> {
-      fdbWatchManager.addNodeCreatedWatch(tr, BASE_PATH, watcher, REQUEST.sessionId);
+      fdbWatchManager.addDataWatch(tr, BASE_PATH, REQUEST.sessionId);
       return null;
     });
 
@@ -179,8 +180,9 @@ public class FdbCreateOpTest extends FdbBaseTest {
       countDownLatch.countDown();
     };
 
+    sessionWatchFeed.connect(REQUEST.sessionId, watcher, () -> true).run();
     fdb.run(tr -> {
-      fdbWatchManager.addNodeChildrenWatch(tr, "/", watcher, REQUEST.sessionId);
+      fdbWatchManager.addChildWatch(tr, "/", REQUEST.sessionId);
       return null;
     });
 
