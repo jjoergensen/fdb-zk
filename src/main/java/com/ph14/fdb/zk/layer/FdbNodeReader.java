@@ -74,7 +74,15 @@ public class FdbNodeReader {
         getAcls(keyValuesByPrefix.get(FdbSchemaConstants.ACL_KEY)));
   }
 
+  private static final StatKey[] NON_ZXID_KEYS = java.util.Arrays.stream(StatKey.values())
+      .filter(k -> k != StatKey.CZXID && k != StatKey.MZXID && k != StatKey.PZXID)
+      .toArray(StatKey[]::new);
+
   public CompletableFuture<Stat> getNodeStat(Subspace nodeSubspace, Transaction transaction) {
+    if (FdbNodeWriter.hasPendingZxids(transaction)) {
+      // Within a multi after a write: zxids are unknown until commit and read as 0.
+      return getNodeStat(nodeSubspace, transaction, NON_ZXID_KEYS);
+    }
     return getNodeStat(
         nodeSubspace,
         transaction.getRange(nodeSubspace.get(FdbSchemaConstants.STAT_KEY).range()).asList());

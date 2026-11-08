@@ -2,7 +2,10 @@ package com.ph14.fdb.zk.layer;
 
 import java.io.IOException;
 import java.util.List;
+import java.util.Collections;
 import java.util.Map;
+import java.util.Set;
+import java.util.WeakHashMap;
 import java.util.Map.Entry;
 import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
@@ -35,6 +38,14 @@ public class FdbNodeWriter {
   private static final Logger LOG = LoggerFactory.getLogger(FdbNodeWriter.class);
 
   public static final long VERSIONSTAMP_FLAG = Long.MIN_VALUE;
+
+  // Transactions that wrote a versionstamped zxid. Reading such a key before commit fails the whole
+  // transaction (accessed_unreadable), so later ops of the same multi must not read zxid fields.
+  private static final Set<Transaction> PENDING_ZXIDS = Collections.synchronizedSet(Collections.newSetFromMap(new WeakHashMap<>()));
+
+  public static boolean hasPendingZxids(Transaction transaction) {
+    return PENDING_ZXIDS.contains(transaction);
+  }
 
   private static final byte[] INITIAL_VERSION = Ints.toByteArray(0);
 
@@ -87,6 +98,7 @@ public class FdbNodeWriter {
 
     for (Entry<StatKey, Long> entry : newValues.entrySet()) {
       if (entry.getValue() == VERSIONSTAMP_FLAG) {
+        PENDING_ZXIDS.add(transaction);
         transaction.mutate(MutationType.SET_VERSIONSTAMPED_VALUE, entry.getKey().toKey(nodeStatSubspace), versionstampValue);
       } else if (entry.getValue() == INCREMENT_FLAG) {
         transaction.mutate(MutationType.ADD, entry.getKey().toKey(nodeStatSubspace), INCREMENT_LONG);
@@ -133,6 +145,7 @@ public class FdbNodeWriter {
     byte[] now = Longs.toByteArray(nowMillis);
     Subspace nodeStatSubspace = nodeSubspace.get(FdbSchemaConstants.STAT_KEY);
 
+    PENDING_ZXIDS.add(transaction);
     transaction.mutate(MutationType.SET_VERSIONSTAMPED_VALUE, StatKey.CZXID.toKey(nodeStatSubspace), versionstampValue);
     transaction.mutate(MutationType.SET_VERSIONSTAMPED_VALUE, StatKey.MZXID.toKey(nodeStatSubspace), versionstampValue);
     transaction.mutate(MutationType.SET_VERSIONSTAMPED_VALUE, StatKey.PZXID.toKey(nodeStatSubspace), versionstampValue);
