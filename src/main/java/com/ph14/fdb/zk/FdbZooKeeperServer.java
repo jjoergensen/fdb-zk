@@ -38,13 +38,14 @@ public class FdbZooKeeperServer extends ZooKeeperServer {
   public void startup() {
     System.out.println("Starting up the server");
 
-    try (Database fdb = FDB.selectAPIVersion(600).open()) {
+    try (Database fdb = FDB.selectAPIVersion(630).open()) {
+      com.ph14.fdb.zk.FdbZkKeyspace.init(fdb);
       fdb.run(tr -> {
-        boolean rootNodeAlreadyExists = DirectoryLayer.getDefault().exists(tr, Collections.singletonList(FdbPath.ROOT_PATH)).join();
+        boolean rootNodeAlreadyExists = com.ph14.fdb.zk.FdbZkKeyspace.dir().exists(tr, Collections.singletonList(FdbPath.ROOT_PATH)).join();
 
         if (!rootNodeAlreadyExists) {
           LOG.info("Creating root path '/'");
-          DirectorySubspace rootSubspace = DirectoryLayer.getDefault().create(tr, Collections.singletonList(FdbPath.ROOT_PATH)).join();
+          DirectorySubspace rootSubspace = com.ph14.fdb.zk.FdbZkKeyspace.dir().create(tr, Collections.singletonList(FdbPath.ROOT_PATH)).join();
           new FdbNodeWriter().createNewNode(tr, rootSubspace, new FdbNode("/", null, new byte[0], Ids.OPEN_ACL_UNSAFE));
         }
 
@@ -59,7 +60,7 @@ public class FdbZooKeeperServer extends ZooKeeperServer {
 
   @Override
   protected void createSessionTracker() {
-    sessionTracker = new FdbSessionManager(FDB.selectAPIVersion(600).open(), Clock.systemUTC(), OptionalLong.empty());
+    sessionTracker = new FdbSessionManager(FDB.selectAPIVersion(630).open(), Clock.systemUTC(), OptionalLong.empty());
   }
 
   @Override

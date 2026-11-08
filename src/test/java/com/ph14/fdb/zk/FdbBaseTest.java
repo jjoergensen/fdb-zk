@@ -58,7 +58,7 @@ public class FdbBaseTest {
 
   @Before
   public void setUp() {
-    this.fdb = FDB.selectAPIVersion(600).open();
+    this.fdb = FDB.selectAPIVersion(630).open();
 
     SERVER_CNXN.clearWatchedEvents();
     REQUEST = new Request(SERVER_CNXN, System.nanoTime(), 1, 2, null, Collections.emptyList());

@@ -53,7 +53,7 @@ public class FdbSetDataOp implements FdbOp<SetDataRequest, SetDataResponse> {
     final DirectorySubspace subspace;
     final Stat stat;
     try {
-      subspace = DirectoryLayer.getDefault().open(transaction, path).join();
+      subspace = com.ph14.fdb.zk.FdbZkKeyspace.dir().open(transaction, path).join();
       stat = fdbNodeReader.getNodeStat(subspace, transaction).join();
 
       if (stat.getVersion() != request.getVersion()) {
@@ -67,13 +67,14 @@ public class FdbSetDataOp implements FdbOp<SetDataRequest, SetDataResponse> {
       }
     }
 
-    fdbNodeWriter.writeData(transaction, subspace, request.getData());
+    byte[] data = request.getData() == null ? new byte[0] : request.getData();
+    fdbNodeWriter.writeData(transaction, subspace, data);
 
     fdbNodeWriter.writeStat(transaction, subspace, ImmutableMap.<StatKey, Long>builder()
         .put(StatKey.MZXID, FdbNodeWriter.VERSIONSTAMP_FLAG)
         .put(StatKey.MTIME, System.currentTimeMillis())
         .put(StatKey.VERSION, stat.getVersion() + 1L)
-        .put(StatKey.DATA_LENGTH, (long) request.getData().length)
+        .put(StatKey.DATA_LENGTH, (long) data.length)
         .build());
 
     fdbWatchManager.triggerNodeUpdatedWatch(transaction, request.getPath());

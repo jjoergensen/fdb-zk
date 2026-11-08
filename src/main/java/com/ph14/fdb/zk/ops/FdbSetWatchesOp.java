@@ -99,8 +99,12 @@ public class FdbSetWatchesOp implements FdbOp<SetWatches, Void> {
   private CompletableFuture<Stat> readNodeStat(Transaction transaction, String zkPath, StatKey ... statKeys) {
     List<String> fdbPath = FdbPath.toFdbPath(zkPath);
 
-    return DirectoryLayer.getDefault().open(transaction, fdbPath)
-        .thenCompose(nodeSubspace -> fdbNodeReader.getNodeStat(nodeSubspace, transaction, statKeys));
+    // A watched path that does not exist (yet) reads as an all-zero Stat: the caller then sets a creation watch.
+    return com.ph14.fdb.zk.FdbZkKeyspace.dir().exists(transaction, fdbPath)
+        .thenCompose(exists -> exists
+            ? com.ph14.fdb.zk.FdbZkKeyspace.dir().open(transaction, fdbPath)
+                .thenCompose(nodeSubspace -> fdbNodeReader.getNodeStat(nodeSubspace, transaction, statKeys))
+            : CompletableFuture.completedFuture(new Stat()));
   }
 
 }

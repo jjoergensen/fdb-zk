@@ -29,7 +29,7 @@ public class CoordinatingClockTest {
 
   @Before
   public void setUp() {
-    this.fdb = FDB.selectAPIVersion(600).open();
+    this.fdb = FDB.selectAPIVersion(630).open();
     this.wasLeader = new AtomicBoolean(false);
 
     fdb.run(tr -> {

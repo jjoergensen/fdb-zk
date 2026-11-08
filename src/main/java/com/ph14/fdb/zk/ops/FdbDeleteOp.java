@@ -63,7 +63,7 @@ public class FdbDeleteOp implements FdbOp<DeleteRequest, DeleteResult> {
     final DirectorySubspace parentNodeSubspace;
     final Stat parentStat;
     try {
-      nodeSubspace = DirectoryLayer.getDefault().open(transaction, path).join();
+      nodeSubspace = com.ph14.fdb.zk.FdbZkKeyspace.dir().open(transaction, path).join();
       stat = fdbNodeReader.getNodeStat(nodeSubspace, transaction).join();
 
       if (stat.getNumChildren() != 0) {
@@ -82,7 +82,7 @@ public class FdbDeleteOp implements FdbOp<DeleteRequest, DeleteResult> {
       }
     }
 
-    parentNodeSubspace = DirectoryLayer.getDefault().open(transaction, FdbPath.toFdbParentPath(request.getPath())).join();
+    parentNodeSubspace = com.ph14.fdb.zk.FdbZkKeyspace.dir().open(transaction, FdbPath.toFdbParentPath(request.getPath())).join();
 
     // could eliminate this read by using atomic ops and using endianness correctly
     parentStat = fdbNodeReader.getNodeStat(parentNodeSubspace, transaction, StatKey.CVERSION, StatKey.NUM_CHILDREN, StatKey.EPHEMERAL_OWNER).join();

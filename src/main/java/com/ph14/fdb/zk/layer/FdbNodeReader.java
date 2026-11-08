@@ -35,7 +35,7 @@ public class FdbNodeReader {
   }
 
   public CompletableFuture<DirectorySubspace> getNodeDirectory(Transaction transaction, String zkPath) {
-    return DirectoryLayer.getDefault().open(transaction, FdbPath.toFdbPath(zkPath));
+    return com.ph14.fdb.zk.FdbZkKeyspace.dir().open(transaction, FdbPath.toFdbPath(zkPath));
   }
 
   public CompletableFuture<FdbNode> getNode(DirectorySubspace nodeSubspace, Transaction transaction) {

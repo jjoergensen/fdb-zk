@@ -22,7 +22,7 @@ public class FdbZooKeeperModule extends AbstractModule {
 
   @Provides
   Database getFdbDatabase() {
-    return FDB.selectAPIVersion(600).open();
+    return FDB.selectAPIVersion(630).open();
   }
 
   @Provides

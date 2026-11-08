@@ -43,7 +43,7 @@ public class FdbExistsOp implements FdbOp<ExistsRequest, ExistsResponse> {
 
     final DirectorySubspace subspace;
     try {
-      subspace = DirectoryLayer.getDefault().open(transaction, path).join();
+      subspace = com.ph14.fdb.zk.FdbZkKeyspace.dir().open(transaction, path).join();
 
       Range statKeyRange = subspace.get(FdbSchemaConstants.STAT_KEY).range();
 

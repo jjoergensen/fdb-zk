@@ -60,7 +60,7 @@ public class CoordinatingClock implements Closeable {
         .build());
 
     this.clockName = clockName;
-    this.clockKey = Tuple.from(PREFIX, clockName.getBytes(Charsets.UTF_8)).pack();
+    this.clockKey = com.ph14.fdb.zk.FdbZkKeyspace.raw().pack(Tuple.from(PREFIX, clockName.getBytes(Charsets.UTF_8)));
     this.onElection = onElection;
     this.clock = clock;
     this.tickMillis = tickMillis.orElse(DEFAULT_TICK_MILLIS);

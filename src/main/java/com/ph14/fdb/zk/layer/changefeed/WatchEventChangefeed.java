@@ -68,21 +68,21 @@ public class WatchEventChangefeed {
    * * Triggers all FDB watches for the changefeed
    */
   public CompletableFuture<Void> appendToChangefeed(Transaction transaction, EventType eventType, String zkPath) {
-    Range activeWatches = Range.startsWith(Tuple.from(ACTIVE_WATCH_NAMESPACE, zkPath, eventType.getIntValue()).pack());
+    Range activeWatches = Range.startsWith(com.ph14.fdb.zk.FdbZkKeyspace.raw().pack(Tuple.from(ACTIVE_WATCH_NAMESPACE, zkPath, eventType.getIntValue())));
 
     return transaction.getRange(activeWatches).asList()
         .thenApply(keyValues -> {
           for (KeyValue keyValue : keyValues) {
-            long sessionId = Tuple.fromBytes(keyValue.getKey()).getLong(3);
+            long sessionId = com.ph14.fdb.zk.FdbZkKeyspace.raw().unpack(keyValue.getKey()).getLong(3);
 
             Tuple changefeedKey = Tuple.from(CHANGEFEED_NAMESPACE, sessionId, Versionstamp.incomplete(), eventType.getIntValue());
             // append the event to the changefeed of each ZK watcher
-            transaction.mutate(MutationType.SET_VERSIONSTAMPED_KEY, changefeedKey.packWithVersionstamp(), Tuple.from(zkPath).pack());
+            transaction.mutate(MutationType.SET_VERSIONSTAMPED_KEY, com.ph14.fdb.zk.FdbZkKeyspace.raw().packWithVersionstamp(changefeedKey), Tuple.from(zkPath).pack());
 
             // update the watched trigger-key for each ZK watcher, so they know to check their changefeeds for updates
             transaction.mutate(
                 MutationType.SET_VERSIONSTAMPED_VALUE,
-                Tuple.from(CHANGEFEED_TRIGGER_NAMESPACE, sessionId, eventType.getIntValue()).pack(),
+                com.ph14.fdb.zk.FdbZkKeyspace.raw().pack(Tuple.from(CHANGEFEED_TRIGGER_NAMESPACE, sessionId, eventType.getIntValue())),
                 Tuple.from(Versionstamp.incomplete()).packWithVersionstamp());
           }
 
@@ -100,7 +100,7 @@ public class WatchEventChangefeed {
       // We don't want concurrent changefeed lookups to duplicate events to the same client.
       changefeedLocks.get(watcher).lock();
 
-      Range allAvailableZKWatchEvents = Range.startsWith(Tuple.from(CHANGEFEED_NAMESPACE, sessionId).pack());
+      Range allAvailableZKWatchEvents = Range.startsWith(com.ph14.fdb.zk.FdbZkKeyspace.raw().pack(Tuple.from(CHANGEFEED_NAMESPACE, sessionId)));
 
       List<ChangefeedWatchEvent> watchEvents = database.run(
           transaction -> transaction.getRange(allAvailableZKWatchEvents).asList())
@@ -127,7 +127,7 @@ public class WatchEventChangefeed {
       Versionstamp greatestVersionstamp = Iterables.getLast(watchEvents).getVersionstamp();
       database.run(transaction -> {
         // if watch entries were written between reading and executing, we want to only remove entries up to what we just had
-        byte[] lastProcessedEvent = ByteArrayUtil.strinc(Tuple.from(CHANGEFEED_NAMESPACE, sessionId, greatestVersionstamp).pack());
+        byte[] lastProcessedEvent = ByteArrayUtil.strinc(com.ph14.fdb.zk.FdbZkKeyspace.raw().pack(Tuple.from(CHANGEFEED_NAMESPACE, sessionId, greatestVersionstamp)));
         transaction.clear(allAvailableZKWatchEvents.begin, lastProcessedEvent);
 
         return null;
@@ -138,7 +138,7 @@ public class WatchEventChangefeed {
   }
 
   public CompletableFuture<Void> clearAllWatchesForSession(Transaction transaction, long sessionId) {
-    Range allAvailableZKWatchEvents = Range.startsWith(Tuple.from(CHANGEFEED_NAMESPACE, sessionId).pack());
+    Range allAvailableZKWatchEvents = Range.startsWith(com.ph14.fdb.zk.FdbZkKeyspace.raw().pack(Tuple.from(CHANGEFEED_NAMESPACE, sessionId)));
 
     return transaction.getRange(allAvailableZKWatchEvents).asList()
         .thenApply(kvs -> {
@@ -155,15 +155,15 @@ public class WatchEventChangefeed {
   }
 
   private static byte[] getActiveWatchKey(long sessionId, String zkPath, EventType eventType) {
-    return Tuple.from(ACTIVE_WATCH_NAMESPACE, zkPath, eventType.getIntValue(), sessionId).pack();
+    return com.ph14.fdb.zk.FdbZkKeyspace.raw().pack(Tuple.from(ACTIVE_WATCH_NAMESPACE, zkPath, eventType.getIntValue(), sessionId));
   }
 
   private static byte[] getTriggerKey(long sessionId, EventType eventType) {
-    return Tuple.from(CHANGEFEED_TRIGGER_NAMESPACE, sessionId, eventType.getIntValue()).pack();
+    return com.ph14.fdb.zk.FdbZkKeyspace.raw().pack(Tuple.from(CHANGEFEED_TRIGGER_NAMESPACE, sessionId, eventType.getIntValue()));
   }
 
   private static ChangefeedWatchEvent toWatchEvent(KeyValue keyValue) {
-    Tuple tuple = Tuple.fromBytes(keyValue.getKey());
+    Tuple tuple = com.ph14.fdb.zk.FdbZkKeyspace.raw().unpack(keyValue.getKey());
     Versionstamp versionstamp = tuple.getVersionstamp(2);
     EventType eventType = EventType.fromInt((int) tuple.getLong(3)); // tuple layer upcasts ints to longs
     String zkPath = Tuple.fromBytes(keyValue.getValue()).getString(0);

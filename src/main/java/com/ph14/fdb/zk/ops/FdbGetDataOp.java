@@ -45,7 +45,7 @@ public class FdbGetDataOp implements FdbOp<GetDataRequest, GetDataResponse> {
 
     final DirectorySubspace subspace;
     try {
-      subspace = DirectoryLayer.getDefault().open(transaction, path).join();
+      subspace = com.ph14.fdb.zk.FdbZkKeyspace.dir().open(transaction, path).join();
     } catch (CompletionException e) {
       if (e.getCause() instanceof NoSuchDirectoryException) {
         if (request.getWatch()) {

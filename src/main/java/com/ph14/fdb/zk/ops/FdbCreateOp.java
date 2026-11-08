@@ -65,7 +65,7 @@ public class FdbCreateOp implements FdbOp<CreateRequest, CreateResponse> {
     final Stat parentStat;
 
     try {
-      parentSubspace = DirectoryLayer.getDefault().open(transaction, FdbPath.toFdbParentPath(request.getPath())).join();
+      parentSubspace = com.ph14.fdb.zk.FdbZkKeyspace.dir().open(transaction, FdbPath.toFdbParentPath(request.getPath())).join();
       parentStat = fdbNodeReader.getNodeStat(parentSubspace, transaction).join();
     } catch (CompletionException e) {
       if (e.getCause() instanceof NoSuchDirectoryException) {
@@ -95,7 +95,7 @@ public class FdbCreateOp implements FdbOp<CreateRequest, CreateResponse> {
       Optional<Long> ephemeralOwner = createMode.isEphemeral() ? Optional.of(zkRequest.sessionId) : Optional.empty();
 
       fdbNode = new FdbNode(finalZkPath, null, request.getData(), request.getAcl(), ephemeralOwner);
-      subspace = DirectoryLayer.getDefault().create(transaction, FdbPath.toFdbPath(finalZkPath)).join();
+      subspace = com.ph14.fdb.zk.FdbZkKeyspace.dir().create(transaction, FdbPath.toFdbPath(finalZkPath)).join();
     } catch (CompletionException e) {
       if (e.getCause() instanceof DirectoryAlreadyExistsException) {
         return CompletableFuture.completedFuture(Result.err(new NodeExistsException(request.getPath())));

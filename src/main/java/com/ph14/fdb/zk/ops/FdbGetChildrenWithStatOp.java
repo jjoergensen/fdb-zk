@@ -39,8 +39,8 @@ public class FdbGetChildrenWithStatOp implements FdbOp<GetChildren2Request, GetC
     fdbWatchManager.checkForWatches(zkRequest.sessionId, zkRequest.cnxn);
 
     try {
-      Stat stat = fdbNodeReader.getNodeStat(DirectoryLayer.getDefault().open(transaction, path).join(), transaction).join();
-      List<String> childrenDirectoryNames = DirectoryLayer.getDefault().list(transaction, path).join();
+      Stat stat = fdbNodeReader.getNodeStat(com.ph14.fdb.zk.FdbZkKeyspace.dir().open(transaction, path).join(), transaction).join();
+      List<String> childrenDirectoryNames = com.ph14.fdb.zk.FdbZkKeyspace.dir().list(transaction, path).join();
 
       if (request.getWatch()) {
         fdbWatchManager.addNodeChildrenWatch(transaction, request.getPath(), zkRequest.cnxn, zkRequest.sessionId);

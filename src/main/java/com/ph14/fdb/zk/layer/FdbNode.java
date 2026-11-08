@@ -24,7 +24,7 @@ public class FdbNode {
   public FdbNode(String zkPath, Stat stat, byte[] data, List<ACL> acls, Optional<Long> ephemeralSessionId) {
     this.zkPath = zkPath;
     this.stat = stat;
-    this.data = data;
+    this.data = data == null ? new byte[0] : data; // ZooKeeper allows null data (Solr creates /overseer with none)
     this.acls = acls;
     this.ephemeralSessionId = ephemeralSessionId;
   }

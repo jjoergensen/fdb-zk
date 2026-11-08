@@ -51,8 +51,8 @@ public class FdbSessionManager implements SessionTracker {
                            Clock clock,
                            @Named("serverTickMillis") OptionalLong serverTickMillis) {
     this.fdb = fdb;
-    this.sessionsById = fdb.run(tr -> DirectoryLayer.getDefault().createOrOpen(tr, SESSION_DIRECTORY).join());
-    this.sessionsByTimeout = fdb.run(tr -> DirectoryLayer.getDefault().createOrOpen(tr, SESSION_TIMEOUT_DIRECTORY).join());
+    this.sessionsById = fdb.run(tr -> com.ph14.fdb.zk.FdbZkKeyspace.dir().createOrOpen(tr, SESSION_DIRECTORY).join());
+    this.sessionsByTimeout = fdb.run(tr -> com.ph14.fdb.zk.FdbZkKeyspace.dir().createOrOpen(tr, SESSION_TIMEOUT_DIRECTORY).join());
     this.incompleteSessionsByIdKey = sessionsById.packWithVersionstamp(Tuple.from(Versionstamp.incomplete()));
     this.clock = clock;
     this.serverTickMillis = serverTickMillis.orElse(500L);
@@ -212,7 +212,7 @@ public class FdbSessionManager implements SessionTracker {
     );
 
     return keyValues.stream()
-        .map(kv -> Tuple.fromBytes(kv.getKey()).getVersionstamp(2).getTransactionVersion())
+        .map(kv -> sessionsByTimeout.unpack(kv.getKey()).getVersionstamp(1).getTransactionVersion())
         .map(Longs::fromByteArray)
         .collect(Collectors.toList());
   }

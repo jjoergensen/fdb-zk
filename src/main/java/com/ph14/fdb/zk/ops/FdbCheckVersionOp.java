@@ -38,7 +38,7 @@ public class FdbCheckVersionOp implements FdbOp<CheckVersionRequest, Void> {
     final DirectorySubspace subspace;
     final Stat stat;
     try {
-      subspace = DirectoryLayer.getDefault().open(transaction, path).join();
+      subspace = com.ph14.fdb.zk.FdbZkKeyspace.dir().open(transaction, path).join();
       stat = fdbNodeReader.getNodeStat(subspace, transaction).join();
 
       if (request.getVersion() != -1 && stat.getVersion() != request.getVersion()) {

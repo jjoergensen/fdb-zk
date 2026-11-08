@@ -135,44 +135,63 @@ public class FdbZooKeeperImpl {
       case OpCode.create:
         CreateRequest create2Request = new CreateRequest();
         ByteBufferInputStream.byteBuffer2Record(request.request, create2Request);
-        return fdb.run(tr -> fdbCreateOp.execute(request, tr, create2Request)).join();
+        return fdb.runAsync(tr -> fdbCreateOp.execute(request, tr, create2Request)).join();
 
       case OpCode.exists:
         ExistsRequest existsRequest = new ExistsRequest();
         ByteBufferInputStream.byteBuffer2Record(request.request, existsRequest);
-        return fdb.run(tr -> fdbExistsOp.execute(request, tr, existsRequest)).join();
+        return fdb.runAsync(tr -> fdbExistsOp.execute(request, tr, existsRequest)).join();
 
       case OpCode.delete:
         DeleteRequest deleteRequest = new DeleteRequest();
         ByteBufferInputStream.byteBuffer2Record(request.request, deleteRequest);
-        return fdb.run(tr -> fdbDeleteOp.execute(request, tr, deleteRequest))
+        return fdb.runAsync(tr -> fdbDeleteOp.execute(request, tr, deleteRequest))
             .thenApply(r -> r.mapOk(success -> deleteRequest))
             .join();
 
       case OpCode.getData:
         GetDataRequest getDataRequest = new GetDataRequest();
         ByteBufferInputStream.byteBuffer2Record(request.request, getDataRequest);
-        return fdb.run(tr -> fdbGetDataOp.execute(request, tr, getDataRequest)).join();
+        return fdb.runAsync(tr -> fdbGetDataOp.execute(request, tr, getDataRequest)).join();
+
+      case OpCode.getACL: {
+        // Listed as supported upstream but never implemented (fell through to BadArguments); Solr calls it at startup.
+        org.apache.zookeeper.proto.GetACLRequest getAclRequest = new org.apache.zookeeper.proto.GetACLRequest();
+        ByteBufferInputStream.byteBuffer2Record(request.request, getAclRequest);
+        return fdb.run(tr -> {
+          try {
+            var dir = com.ph14.fdb.zk.FdbZkKeyspace.dir()
+                .open(tr, com.ph14.fdb.zk.layer.FdbPath.toFdbPath(getAclRequest.getPath())).join();
+            var node = new com.ph14.fdb.zk.layer.FdbNodeReader().getNode(dir, tr).join();
+            return Result.ok(new org.apache.zookeeper.proto.GetACLResponse(node.getAcls(), node.getStat()));
+          } catch (java.util.concurrent.CompletionException e) {
+            if (e.getCause() instanceof com.apple.foundationdb.directory.NoSuchDirectoryException) {
+              return Result.err(new KeeperException.NoNodeException(getAclRequest.getPath()));
+            }
+            throw e;
+          }
+        });
+      }
 
       case OpCode.getChildren:
         GetChildrenRequest getChildrenRequest = new GetChildrenRequest();
         ByteBufferInputStream.byteBuffer2Record(request.request, getChildrenRequest);
-        return fdb.run(tr -> fdbGetChildrenOp.execute(request, tr, getChildrenRequest)).join();
+        return fdb.runAsync(tr -> fdbGetChildrenOp.execute(request, tr, getChildrenRequest)).join();
 
       case OpCode.getChildren2:
         GetChildren2Request getChildren2Request = new GetChildren2Request();
         ByteBufferInputStream.byteBuffer2Record(request.request, getChildren2Request);
-        return fdb.run(tr -> fdbGetChildrenWithStatOp.execute(request, tr, getChildren2Request)).join();
+        return fdb.runAsync(tr -> fdbGetChildrenWithStatOp.execute(request, tr, getChildren2Request)).join();
 
       case OpCode.setData:
         SetDataRequest setDataRequest = new SetDataRequest();
         ByteBufferInputStream.byteBuffer2Record(request.request, setDataRequest);
-        return fdb.run(tr -> fdbSetDataOp.execute(request, tr, setDataRequest)).join();
+        return fdb.runAsync(tr -> fdbSetDataOp.execute(request, tr, setDataRequest)).join();
 
       case OpCode.check:
         CheckVersionRequest checkVersionRequest = new CheckVersionRequest();
         ByteBufferInputStream.byteBuffer2Record(request.request, checkVersionRequest);
-        return fdb.run(tr -> fdbCheckVersionOp.execute(request, tr, checkVersionRequest)).join();
+        return fdb.runAsync(tr -> fdbCheckVersionOp.execute(request, tr, checkVersionRequest)).join();
 
       case OpCode.setACL:
         SetACLRequest setACLRequest = new SetACLRequest();
@@ -182,7 +201,7 @@ public class FdbZooKeeperImpl {
       case OpCode.setWatches:
         SetWatches setWatches = new SetWatches();
         ByteBufferInputStream.byteBuffer2Record(request.request, setWatches);
-        return fdb.run(tr -> fdbSetWatchesOp.execute(request, tr, setWatches)).join();
+        return fdb.runAsync(tr -> fdbSetWatchesOp.execute(request, tr, setWatches)).join();
 
       case OpCode.createSession:
         request.request.rewind();
