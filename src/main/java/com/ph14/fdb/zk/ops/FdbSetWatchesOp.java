@@ -23,7 +23,7 @@ import com.ph14.fdb.zk.layer.FdbPath;
 import com.ph14.fdb.zk.layer.FdbWatchManager;
 import com.ph14.fdb.zk.layer.StatKey;
 
-public class FdbSetWatchesOp implements FdbOp<SetWatches, Void> {
+public class FdbSetWatchesOp implements FdbOp<SetWatches, Boolean> {
 
   private final FdbNodeReader fdbNodeReader;
   private final FdbWatchManager fdbWatchManager;
@@ -36,7 +36,7 @@ public class FdbSetWatchesOp implements FdbOp<SetWatches, Void> {
   }
 
   @Override
-  public CompletableFuture<Result<Void, KeeperException>> execute(Request zkRequest, Transaction transaction, SetWatches setWatches) {
+  public CompletableFuture<Result<Boolean, KeeperException>> execute(Request zkRequest, Transaction transaction, SetWatches setWatches) {
     Watcher watcher = zkRequest.cnxn;
 
     List<CompletableFuture<Void>> backfilledWatches = new ArrayList<>(
@@ -93,7 +93,8 @@ public class FdbSetWatchesOp implements FdbOp<SetWatches, Void> {
       );
     }
 
-    return AsyncUtil.whenAll(backfilledWatches).thenApply(v -> Result.ok(null));
+    // Results cannot hold null; a non-Record ok value means "reply without a body".
+    return AsyncUtil.whenAll(backfilledWatches).thenApply(v -> Result.ok(Boolean.TRUE));
   }
 
   private CompletableFuture<Stat> readNodeStat(Transaction transaction, String zkPath, StatKey ... statKeys) {

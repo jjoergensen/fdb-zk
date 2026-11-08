@@ -7,7 +7,7 @@ import java.util.concurrent.CompletableFuture;
 
 import org.apache.zookeeper.KeeperException;
 import org.apache.zookeeper.MultiResponse;
-import org.apache.zookeeper.MultiTransactionRecord;
+import org.apache.zookeeper.MultiOperationRecord;
 import org.apache.zookeeper.Op;
 import org.apache.zookeeper.OpResult;
 import org.apache.zookeeper.OpResult.CheckResult;
@@ -57,7 +57,7 @@ public class FdbMultiOp {
     this.fdbCheckVersionOp = fdbCheckVersionOp;
   }
 
-  public MultiResponse execute(Request zkRequest, MultiTransactionRecord multiTransactionRecord) {
+  public MultiResponse execute(Request zkRequest, MultiOperationRecord multiTransactionRecord) {
     List<CompletableFuture<Result<OpResult, KeeperException>>> results = new ArrayList<>();
 
     try {

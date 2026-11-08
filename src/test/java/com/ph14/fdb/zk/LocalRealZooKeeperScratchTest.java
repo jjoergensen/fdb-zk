@@ -83,7 +83,7 @@ public class LocalRealZooKeeperScratchTest {
     List<String> children = zooKeeper.getChildren("/", false);
     LOG.info("Root level children: {}", children);
 
-    standaloneServerFactory.closeAll();
+    standaloneServerFactory.closeAll(org.apache.zookeeper.server.ServerCnxn.DisconnectReason.SERVER_SHUTDOWN);
   }
 
   private static final Logger LOG = LoggerFactory.getLogger(LocalRealZooKeeperScratchTest.class);

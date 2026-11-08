@@ -34,7 +34,7 @@ public class FdbRequestProcessor implements RequestProcessor {
 
   @Override
   public void processRequest(Request request) {
-    LOG.info("Received request in Fdb Request Processor: {}", request);
+    LOG.debug("Received request in Fdb Request Processor: {}", request);
 
     Preconditions.checkState(
         fdbZooKeeper.handlesRequest(request),
@@ -44,6 +44,20 @@ public class FdbRequestProcessor implements RequestProcessor {
       sendResponse(request, fdbZooKeeper.handle(request));
     } catch (IOException e) {
       LOG.error("Failed to process request {}", request, e);
+    } catch (RuntimeException e) {
+      // This runs on ZooKeeper's RequestThrottler, a critical thread: an escaping exception stops the whole server.
+      // Fail only this request.
+      LOG.error("Request failed: {}", request, e);
+      try {
+        sendResponse(request, com.hubspot.algebra.Result.err(new KeeperException.SystemErrorException()));
+      } catch (RuntimeException replyFailure) {
+        LOG.error("Could not send error reply for {}", request, replyFailure);
+      }
+    } finally {
+      // What FinalRequestProcessor does for every request in 3.9; without it the RequestThrottler's
+      // in-process count only grows and the server eventually stops admitting requests.
+      zooKeeperServer.decInProcess();
+      zooKeeperServer.requestFinished(request);
     }
   }
 

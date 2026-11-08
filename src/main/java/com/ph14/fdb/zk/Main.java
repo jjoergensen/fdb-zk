@@ -19,6 +19,24 @@ public final class Main {
       }
       return;
     }
+    String dumpEvery = System.getenv("FDB_ZK_STACKDUMP_SECONDS");
+    if (dumpEvery != null) {
+      // In-process stack dumps: libfdb_c takes over SIGQUIT, so jstack/kill -3 cannot be used.
+      long seconds = Long.parseLong(dumpEvery);
+      var t = new Thread(() -> {
+        while (true) {
+          try { Thread.sleep(seconds * 1000); } catch (InterruptedException e) { return; }
+          Thread.getAllStackTraces().forEach((th, st) -> {
+            if (!th.getName().startsWith("RequestThrottler") && !th.getName().startsWith("NIO")) return;
+            var sb = new StringBuilder("STACKDUMP \"" + th.getName() + "\" " + th.getState() + "\n");
+            for (var f : st) sb.append("    at ").append(f).append('\n');
+            System.out.print(sb);
+          });
+        }
+      }, "stackdump");
+      t.setDaemon(true);
+      t.start();
+    }
     String bind = System.getenv().getOrDefault("FDB_ZK_BIND", "127.0.0.1");
     int port = Integer.parseInt(System.getenv().getOrDefault("FDB_ZK_PORT", "2181"));
     int tickTime = Integer.parseInt(System.getenv().getOrDefault("FDB_ZK_TICK_MS", "2000"));

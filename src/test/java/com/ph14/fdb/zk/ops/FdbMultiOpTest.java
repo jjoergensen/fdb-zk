@@ -9,7 +9,7 @@ import java.util.List;
 import org.apache.zookeeper.KeeperException;
 import org.apache.zookeeper.KeeperException.Code;
 import org.apache.zookeeper.MultiResponse;
-import org.apache.zookeeper.MultiTransactionRecord;
+import org.apache.zookeeper.MultiOperationRecord;
 import org.apache.zookeeper.Op;
 import org.apache.zookeeper.OpResult.CreateResult;
 import org.apache.zookeeper.OpResult.ErrorResult;
@@ -29,7 +29,7 @@ public class FdbMultiOpTest extends FdbBaseTest {
   @Test
   @Ignore
   public void itCreatesManyNodesAtOnce() {
-    MultiTransactionRecord ops = new MultiTransactionRecord();
+    MultiOperationRecord ops = new MultiOperationRecord();
     ops.add(Op.create("/bac", data.getBytes(), Collections.emptyList(), 0));
     ops.add(Op.create("/abc", data.getBytes(), Collections.emptyList(), 0));
     ops.add(Op.create("/cba", data.getBytes(), Collections.emptyList(), 0));
@@ -61,7 +61,7 @@ public class FdbMultiOpTest extends FdbBaseTest {
   public void itDoesntSetIfOneOpFails() {
     final String data = Strings.repeat("this is the song that never ends ", 10000);
 
-    MultiTransactionRecord ops = new MultiTransactionRecord();
+    MultiOperationRecord ops = new MultiOperationRecord();
     ops.add(Op.create(BASE_PATH, data.getBytes(), Collections.emptyList(), 0));
     ops.add(Op.check(SUBPATH, 15));
 

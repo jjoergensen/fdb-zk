@@ -35,7 +35,7 @@
     <dependency>
       <groupId>com.google.guava</groupId>
       <artifactId>guava</artifactId>
-      <version>27.0-jre</version>
+      <version>33.3.1-jre</version>
     </dependency>
     <dependency>
       <groupId>org.foundationdb</groupId>
@@ -45,7 +45,13 @@
     <dependency>
       <groupId>org.apache.zookeeper</groupId>
       <artifactId>zookeeper</artifactId>
-      <version>3.4.6</version>
+      <version>3.9.2</version>
+    </dependency>
+    <!-- ZooKeeper 3.9 declares metrics-core as provided, but ServerMetrics needs it at runtime -->
+    <dependency>
+      <groupId>io.dropwizard.metrics</groupId>
+      <artifactId>metrics-core</artifactId>
+      <version>4.1.12.1</version>
     </dependency>
     <dependency>
       <groupId>com.hubspot</groupId>
@@ -55,7 +61,7 @@
     <dependency>
       <groupId>com.google.inject</groupId>
       <artifactId>guice</artifactId>
-      <version>4.1.0</version>
+      <version>7.0.0</version>
     </dependency>
     <dependency>
       <groupId>org.apache.curator</groupId>

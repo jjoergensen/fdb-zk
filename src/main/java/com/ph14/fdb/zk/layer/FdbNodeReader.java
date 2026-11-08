@@ -124,7 +124,8 @@ public class FdbNodeReader {
     byte[] subspacePrefix = nodeStatSubspace.pack();
 
     for (KeyValue keyValue : keyValues) {
-      if (!ByteArrayUtil.startsWith(keyValue.getKey(), subspacePrefix)) {
+      if (!ByteArrayUtil.startsWith(keyValue.getKey(), subspacePrefix) || keyValue.getValue() == null) {
+        // A selectively fetched stat field that was never written (e.g. PZXID) reads as 0, like ZooKeeper's Stat.
         continue;
       }
 

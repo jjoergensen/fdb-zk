@@ -83,7 +83,8 @@ public class FdbZooKeeperServer extends ZooKeeperServer {
 
   @Override
   protected void setupRequestProcessors() {
-    super.setupRequestProcessors();
+    // No super call: ZooKeeper 3.9 would start its own Prep/Sync/Final pipeline (txn log, in-memory DataTree).
+    // FoundationDB is the store, so every request goes to FdbRequestProcessor only.
 
     Injector injector = Guice.createInjector(new FdbZooKeeperModule());
 

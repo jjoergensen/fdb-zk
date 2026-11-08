@@ -89,7 +89,54 @@ public class FdbSessionManager implements SessionTracker {
         .join();
   }
 
+  // ZooKeeper 3.6+ split addSession into track/commit; every session here is global and lives in FDB.
   @Override
+  public boolean trackSession(long sessionId, int sessionTimeout) {
+    addSession(sessionId, sessionTimeout);
+    return true;
+  }
+
+  @Override
+  public boolean commitSession(long sessionId, int sessionTimeout) {
+    addSession(sessionId, sessionTimeout);
+    return true;
+  }
+
+  @Override
+  public boolean isTrackingSession(long sessionId) {
+    return true;
+  }
+
+  @Override
+  public void checkGlobalSession(long sessionId, Object owner) throws SessionExpiredException, SessionMovedException {
+    checkSession(sessionId, owner);
+  }
+
+  @Override
+  public java.util.Map<Long, java.util.Set<Long>> getSessionExpiryMap() {
+    return java.util.Collections.emptyMap();
+  }
+
+  @Override
+  public long getLocalSessionCount() {
+    return 0;
+  }
+
+  @Override
+  public boolean isLocalSessionsEnabled() {
+    return false;
+  }
+
+  @Override
+  public java.util.Set<Long> globalSessions() {
+    return java.util.Collections.emptySet();
+  }
+
+  @Override
+  public java.util.Set<Long> localSessions() {
+    return java.util.Collections.emptySet();
+  }
+
   public void addSession(long sessionId, int sessionTimeout) {
     long sessionExpirationTimestamp = calculateSessionExpirationTimestamp(clock.millis(), sessionTimeout);
 
@@ -159,7 +206,7 @@ public class FdbSessionManager implements SessionTracker {
 
   @Override
   public void removeSession(long sessionId) {
-    fdb.run(tr -> removeSessionAsync(tr, sessionId)).join();
+    fdb.runAsync(tr -> removeSessionAsync(tr, sessionId)).join();
   }
 
   public CompletableFuture<Void> removeSessionAsync(Transaction transaction, long sessionId) {

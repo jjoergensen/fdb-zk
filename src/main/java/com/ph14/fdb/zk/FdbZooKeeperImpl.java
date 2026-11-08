@@ -7,7 +7,7 @@ import java.util.Set;
 import org.apache.zookeeper.KeeperException;
 import org.apache.zookeeper.KeeperException.SessionExpiredException;
 import org.apache.zookeeper.KeeperException.SessionMovedException;
-import org.apache.zookeeper.MultiTransactionRecord;
+import org.apache.zookeeper.MultiOperationRecord;
 import org.apache.zookeeper.ZooDefs.OpCode;
 import org.apache.zookeeper.proto.CheckVersionRequest;
 import org.apache.zookeeper.proto.CreateRequest;
@@ -21,7 +21,6 @@ import org.apache.zookeeper.proto.SetDataRequest;
 import org.apache.zookeeper.proto.SetWatches;
 import org.apache.zookeeper.proto.SyncRequest;
 import org.apache.zookeeper.proto.SyncResponse;
-import org.apache.zookeeper.server.ByteBufferInputStream;
 import org.apache.zookeeper.server.Request;
 import org.apache.zookeeper.txn.CreateSessionTxn;
 
@@ -86,6 +85,7 @@ public class FdbZooKeeperImpl {
   private final FdbDeleteOp fdbDeleteOp;
   private final FdbSetWatchesOp fdbSetWatchesOp;
   private final FdbMultiOp fdbMultiOp;
+  private final com.ph14.fdb.zk.session.FdbSessionDataPurger fdbSessionDataPurger;
 
   private final FdbSessionManager fdbSessionManager;
 
@@ -101,7 +101,9 @@ public class FdbZooKeeperImpl {
                           FdbGetChildrenWithStatOp fdbGetChildrenWithStatOp,
                           FdbDeleteOp fdbDeleteOp,
                           FdbSetWatchesOp fdbSetWatchesOp,
-                          FdbMultiOp fdbMultiOp) {
+                          FdbMultiOp fdbMultiOp,
+                          com.ph14.fdb.zk.session.FdbSessionDataPurger fdbSessionDataPurger) {
+    this.fdbSessionDataPurger = fdbSessionDataPurger;
     this.fdb = fdb;
     this.fdbSessionManager = fdbSessionManager;
     this.fdbCreateOp = fdbCreateOp;
@@ -133,31 +135,26 @@ public class FdbZooKeeperImpl {
 
     switch (request.type) {
       case OpCode.create:
-        CreateRequest create2Request = new CreateRequest();
-        ByteBufferInputStream.byteBuffer2Record(request.request, create2Request);
+        CreateRequest create2Request = request.readRequestRecord(CreateRequest::new);
         return fdb.runAsync(tr -> fdbCreateOp.execute(request, tr, create2Request)).join();
 
       case OpCode.exists:
-        ExistsRequest existsRequest = new ExistsRequest();
-        ByteBufferInputStream.byteBuffer2Record(request.request, existsRequest);
+        ExistsRequest existsRequest = request.readRequestRecord(ExistsRequest::new);
         return fdb.runAsync(tr -> fdbExistsOp.execute(request, tr, existsRequest)).join();
 
       case OpCode.delete:
-        DeleteRequest deleteRequest = new DeleteRequest();
-        ByteBufferInputStream.byteBuffer2Record(request.request, deleteRequest);
+        DeleteRequest deleteRequest = request.readRequestRecord(DeleteRequest::new);
         return fdb.runAsync(tr -> fdbDeleteOp.execute(request, tr, deleteRequest))
             .thenApply(r -> r.mapOk(success -> deleteRequest))
             .join();
 
       case OpCode.getData:
-        GetDataRequest getDataRequest = new GetDataRequest();
-        ByteBufferInputStream.byteBuffer2Record(request.request, getDataRequest);
+        GetDataRequest getDataRequest = request.readRequestRecord(GetDataRequest::new);
         return fdb.runAsync(tr -> fdbGetDataOp.execute(request, tr, getDataRequest)).join();
 
       case OpCode.getACL: {
         // Listed as supported upstream but never implemented (fell through to BadArguments); Solr calls it at startup.
-        org.apache.zookeeper.proto.GetACLRequest getAclRequest = new org.apache.zookeeper.proto.GetACLRequest();
-        ByteBufferInputStream.byteBuffer2Record(request.request, getAclRequest);
+        org.apache.zookeeper.proto.GetACLRequest getAclRequest = request.readRequestRecord(org.apache.zookeeper.proto.GetACLRequest::new);
         return fdb.run(tr -> {
           try {
             var dir = com.ph14.fdb.zk.FdbZkKeyspace.dir()
@@ -174,54 +171,48 @@ public class FdbZooKeeperImpl {
       }
 
       case OpCode.getChildren:
-        GetChildrenRequest getChildrenRequest = new GetChildrenRequest();
-        ByteBufferInputStream.byteBuffer2Record(request.request, getChildrenRequest);
+        GetChildrenRequest getChildrenRequest = request.readRequestRecord(GetChildrenRequest::new);
         return fdb.runAsync(tr -> fdbGetChildrenOp.execute(request, tr, getChildrenRequest)).join();
 
       case OpCode.getChildren2:
-        GetChildren2Request getChildren2Request = new GetChildren2Request();
-        ByteBufferInputStream.byteBuffer2Record(request.request, getChildren2Request);
+        GetChildren2Request getChildren2Request = request.readRequestRecord(GetChildren2Request::new);
         return fdb.runAsync(tr -> fdbGetChildrenWithStatOp.execute(request, tr, getChildren2Request)).join();
 
       case OpCode.setData:
-        SetDataRequest setDataRequest = new SetDataRequest();
-        ByteBufferInputStream.byteBuffer2Record(request.request, setDataRequest);
+        SetDataRequest setDataRequest = request.readRequestRecord(SetDataRequest::new);
         return fdb.runAsync(tr -> fdbSetDataOp.execute(request, tr, setDataRequest)).join();
 
       case OpCode.check:
-        CheckVersionRequest checkVersionRequest = new CheckVersionRequest();
-        ByteBufferInputStream.byteBuffer2Record(request.request, checkVersionRequest);
+        CheckVersionRequest checkVersionRequest = request.readRequestRecord(CheckVersionRequest::new);
         return fdb.runAsync(tr -> fdbCheckVersionOp.execute(request, tr, checkVersionRequest)).join();
 
       case OpCode.setACL:
-        SetACLRequest setACLRequest = new SetACLRequest();
-        ByteBufferInputStream.byteBuffer2Record(request.request, setACLRequest);
+        SetACLRequest setACLRequest = request.readRequestRecord(SetACLRequest::new);
         throw new UnsupportedOperationException("not there yet");
 
       case OpCode.setWatches:
-        SetWatches setWatches = new SetWatches();
-        ByteBufferInputStream.byteBuffer2Record(request.request, setWatches);
+        SetWatches setWatches = request.readRequestRecord(SetWatches::new);
         return fdb.runAsync(tr -> fdbSetWatchesOp.execute(request, tr, setWatches)).join();
 
       case OpCode.createSession:
-        request.request.rewind();
-        int to = request.request.getInt();
-        request.txn = new CreateSessionTxn(to);
+        int to = java.nio.ByteBuffer.wrap(request.readRequestBytes()).getInt();
+        request.setTxn(new CreateSessionTxn(to));
         fdbSessionManager.addSession(request.sessionId, to);
         return Result.ok(true);
 
       case OpCode.closeSession:
-        fdbSessionManager.setSessionClosing(request.sessionId);
+        // ZooKeeper semantics: closing a session deletes its ephemeral nodes (firing watches) at once.
+        // Upstream only removed the session keys, which also removed it from the expiry index, so the
+        // ephemerals of cleanly closed sessions were never deleted (stale Solr live_nodes).
+        fdbSessionDataPurger.removeAllSessionData(request.sessionId).join();
         return Result.ok(true);
 
       case OpCode.multi:
-        MultiTransactionRecord multiTransactionRecord = new MultiTransactionRecord();
-        ByteBufferInputStream.byteBuffer2Record(request.request, multiTransactionRecord);
+        MultiOperationRecord multiTransactionRecord = request.readRequestRecord(MultiOperationRecord::new);
         return Result.ok(fdbMultiOp.execute(request, multiTransactionRecord));
 
       case OpCode.sync: // no-op, fdb won't return stale reads
-        SyncRequest syncRequest = new SyncRequest();
-        ByteBufferInputStream.byteBuffer2Record(request.request, syncRequest);
+        SyncRequest syncRequest = request.readRequestRecord(SyncRequest::new);
         return Result.ok(new SyncResponse(syncRequest.getPath()));
 
       case OpCode.ping:
