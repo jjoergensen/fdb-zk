@@ -88,7 +88,7 @@ public class FdbCreateOp implements FdbOp<CreateRequest, CreateResponse> {
         LOG.error("Couldn't find parent: {} for {}", FdbPath.toFdbParentPath(request.getPath()), request.getPath());
         return Result.err(new KeeperException.NoNodeException("parent: " + request.getPath()));
       } else {
-        LOG.error("Error completing request : {}. {}", request, e);
+        LOG.error("Error completing request: {}", request, e);
         return Result.err(new KeeperException.APIErrorException());
       }
     }
@@ -116,7 +116,7 @@ public class FdbCreateOp implements FdbOp<CreateRequest, CreateResponse> {
       if (e.getCause() instanceof DirectoryAlreadyExistsException) {
         return Result.err(new NodeExistsException(request.getPath()));
       } else {
-        LOG.error("Error completing request : {}. {}", request, e);
+        LOG.error("Error completing request: {}", request, e);
         return Result.err(new KeeperException.SystemErrorException());
       }
     }

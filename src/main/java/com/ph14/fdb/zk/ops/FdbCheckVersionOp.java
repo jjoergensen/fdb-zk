@@ -24,6 +24,8 @@ import com.ph14.fdb.zk.layer.FdbPath;
 
 public class FdbCheckVersionOp implements FdbOp<CheckVersionRequest, Boolean> {
 
+  private static final org.slf4j.Logger LOG = org.slf4j.LoggerFactory.getLogger(FdbCheckVersionOp.class);
+
   private final FdbNodeReader fdbNodeReader;
 
   @Inject
@@ -48,6 +50,7 @@ public class FdbCheckVersionOp implements FdbOp<CheckVersionRequest, Boolean> {
       if (e.getCause() instanceof NoSuchDirectoryException) {
         return CompletableFuture.completedFuture(Results.err(new NoNodeException(request.getPath())));
       } else {
+        LOG.error("check failed for {}", request.getPath(), e);
         return CompletableFuture.completedFuture(Results.err(new APIErrorException()));
       }
     }
