@@ -66,7 +66,9 @@ public class FdbDeleteOp implements FdbOp<DeleteRequest, DeleteResult> {
       nodeSubspace = com.ph14.fdb.zk.FdbZkKeyspace.dir().open(transaction, path).join();
       stat = fdbNodeReader.getNodeStat(nodeSubspace, transaction).join();
 
-      if (stat.getNumChildren() != 0) {
+      // The real children decide, not numChildren: a stale counter must not make a node undeletable
+      // (Solr's ZkMaintenanceUtils.clean recurses on NotEmpty until the stack overflows).
+      if (!com.ph14.fdb.zk.FdbZkKeyspace.dir().list(transaction, path).join().isEmpty()) {
         return CompletableFuture.completedFuture(Result.err(new NotEmptyException(request.getPath())));
       }
 
@@ -95,7 +97,7 @@ public class FdbDeleteOp implements FdbOp<DeleteRequest, DeleteResult> {
         ));
 
     if (stat.getEphemeralOwner() != 0) {
-      fdbEphemeralNodeManager.removeNode(transaction, request.getPath(), zkRequest.sessionId);
+      fdbEphemeralNodeManager.removeNode(transaction, request.getPath(), stat.getEphemeralOwner());
     }
 
     fdbNodeWriter.deleteNodeAsync(transaction, nodeSubspace).join();
