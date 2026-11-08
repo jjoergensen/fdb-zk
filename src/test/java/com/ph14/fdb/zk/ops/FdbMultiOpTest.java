@@ -67,7 +67,7 @@ public class FdbMultiOpTest extends FdbBaseTest {
 
     MultiResponse opResults = fdbMultiOp.execute(REQUEST, ops);
     assertThat(opResults.getResultList())
-        .containsExactly(new CreateResult(BASE_PATH), new ErrorResult(Code.NONODE.intValue()));
+        .containsExactly(new ErrorResult(Code.OK.intValue()), new ErrorResult(Code.NONODE.intValue()));
 
     Result<ExistsResponse, KeeperException> result = fdb.run(
         tr -> fdbExistsOp.execute(REQUEST, tr, new ExistsRequest(BASE_PATH, false))).join();

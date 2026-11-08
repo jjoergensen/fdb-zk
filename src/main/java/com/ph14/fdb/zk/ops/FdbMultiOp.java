@@ -1,9 +1,9 @@
 package com.ph14.fdb.zk.ops;
 
 import java.util.ArrayList;
-import java.util.Iterator;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionException;
 
 import org.apache.zookeeper.KeeperException;
 import org.apache.zookeeper.MultiResponse;
@@ -21,8 +21,6 @@ import org.apache.zookeeper.proto.CreateRequest;
 import org.apache.zookeeper.proto.DeleteRequest;
 import org.apache.zookeeper.proto.SetDataRequest;
 import org.apache.zookeeper.server.Request;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
 import com.apple.foundationdb.Database;
 import com.google.inject.Inject;
@@ -35,8 +33,6 @@ import com.hubspot.algebra.Result;
  * Tracking: https://github.com/pH14/fdb-zk/issues/15
  */
 public class FdbMultiOp {
-
-  private static final Logger LOG = LoggerFactory.getLogger(FdbMultiOp.class);
 
   private final Database fdb;
   private final FdbCreateOp fdbCreateOp;
@@ -58,73 +54,81 @@ public class FdbMultiOp {
   }
 
   public MultiResponse execute(Request zkRequest, MultiOperationRecord multiTransactionRecord) {
-    List<CompletableFuture<Result<OpResult, KeeperException>>> results = new ArrayList<>();
-
+    final List<CompletableFuture<OpResult>> results;
     try {
-      fdb.run(transaction -> {
-        Iterator<Op> ops = multiTransactionRecord.iterator();
-
-        while (ops.hasNext()) {
-          Op op = ops.next();
+      results = fdb.run(transaction -> {
+        List<CompletableFuture<OpResult>> attemptResults = new ArrayList<>();
+        for (Op op : multiTransactionRecord) {
+          Result<CompletableFuture<OpResult>, KeeperException> prepared;
 
           switch (op.getType()) {
             case OpCode.create:
-              results.add(
-                  fdbCreateOp.execute(zkRequest, transaction, (CreateRequest) op.toRequestRecord())
-                      .thenApply(r -> r.mapOk(response -> new CreateResult(response.getPath()))));
+              prepared = fdbCreateOp.execute(zkRequest, transaction, (CreateRequest) op.toRequestRecord()).join()
+                  .mapOk(response -> CompletableFuture.completedFuture(new CreateResult(response.getPath())));
+              break;
+            case OpCode.create2:
+              prepared = fdbCreateOp.prepare(zkRequest, transaction, (CreateRequest) op.toRequestRecord())
+                  .mapOk(response -> response.thenApply(created -> new CreateResult(created.getPath(), created.getStat())));
               break;
             case OpCode.delete:
-              results.add(
-                  fdbDeleteOp.execute(zkRequest, transaction, (DeleteRequest) op.toRequestRecord())
-                      .thenApply(r -> r.mapOk(response -> new DeleteResult())));
+              prepared = fdbDeleteOp.execute(zkRequest, transaction, (DeleteRequest) op.toRequestRecord()).join()
+                  .mapOk(response -> CompletableFuture.completedFuture(new DeleteResult()));
               break;
             case OpCode.setData:
-              results.add(
-                  fdbSetDataOp.execute(zkRequest, transaction, (SetDataRequest) op.toRequestRecord())
-                      .thenApply(r -> r.mapOk(response -> new SetDataResult(response.getStat()))));
+              prepared = fdbSetDataOp.prepare(zkRequest, transaction, (SetDataRequest) op.toRequestRecord())
+                  .mapOk(response -> response.thenApply(updated -> new SetDataResult(updated.getStat())));
               break;
             case OpCode.check:
-              results.add(
-                  fdbCheckVersionOp.execute(zkRequest, transaction, (CheckVersionRequest) op.toRequestRecord())
-                      .thenApply(r -> r.mapOk(response -> new CheckResult())));
+              prepared = fdbCheckVersionOp.execute(zkRequest, transaction, (CheckVersionRequest) op.toRequestRecord()).join()
+                  .mapOk(response -> CompletableFuture.completedFuture(new CheckResult()));
               break;
+            default:
+              prepared = Result.err(new KeeperException.UnimplementedException());
           }
+
+          if (prepared.isErr()) {
+            throw new AbortTransactionException(attemptResults.size(), prepared.unwrapErrOrElseThrow().code());
+          }
+          attemptResults.add(prepared.unwrapOrElseThrow());
         }
 
-        for (CompletableFuture<Result<OpResult, KeeperException>> result : results) {
-          Result<OpResult, KeeperException> individualResult = result.join();
-          if (individualResult.isErr()) {
-            throw new AbortTransactionException();
-          }
-        }
-
-        return null;
+        return attemptResults;
       });
-    } catch (Exception e) {
-      if (e.getCause() instanceof AbortTransactionException) {
-        LOG.debug("Aborting transaction");
-      } else {
+    } catch (RuntimeException e) {
+      Throwable cause = e;
+      while (cause instanceof CompletionException) {
+        cause = cause.getCause();
+      }
+      if (!(cause instanceof AbortTransactionException)) {
         throw e;
       }
+      AbortTransactionException aborted = (AbortTransactionException) cause;
+      MultiResponse response = new MultiResponse();
+      int index = 0;
+      for (Op op : multiTransactionRecord) {
+        KeeperException.Code code = index < aborted.index ? KeeperException.Code.OK
+            : index == aborted.index ? aborted.code : KeeperException.Code.RUNTIMEINCONSISTENCY;
+        response.add(new ErrorResult(code.intValue()));
+        index++;
+      }
+      return response;
     }
 
     MultiResponse multiResponse = new MultiResponse();
-    for (CompletableFuture<Result<OpResult, KeeperException>> result : results) {
-      Result<OpResult, KeeperException> individualResult = result.join();
-
-      if (individualResult.isErr()) {
-        multiResponse.add(new ErrorResult(individualResult.unwrapErrOrElseThrow().code().intValue()));
-      } else {
-        multiResponse.add(individualResult.unwrapOrElseThrow());
-      }
+    for (CompletableFuture<OpResult> result : results) {
+      multiResponse.add(result.join());
     }
-
     return multiResponse;
   }
 
 
   private static class AbortTransactionException extends RuntimeException {
-    public AbortTransactionException() {
+    private final int index;
+    private final KeeperException.Code code;
+
+    public AbortTransactionException(int index, KeeperException.Code code) {
+      this.index = index;
+      this.code = code;
     }
   }
 

@@ -2,7 +2,9 @@ package com.ph14.fdb.zk.ops;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
+import java.util.stream.Collectors;
 
 import org.apache.zookeeper.KeeperException;
 import org.apache.zookeeper.WatchedEvent;
@@ -15,7 +17,6 @@ import org.apache.zookeeper.server.Request;
 
 import com.apple.foundationdb.Transaction;
 import com.apple.foundationdb.async.AsyncUtil;
-import com.apple.foundationdb.directory.DirectoryLayer;
 import com.google.inject.Inject;
 import com.hubspot.algebra.Result;
 import com.ph14.fdb.zk.layer.FdbNodeReader;
@@ -23,7 +24,7 @@ import com.ph14.fdb.zk.layer.FdbPath;
 import com.ph14.fdb.zk.layer.FdbWatchManager;
 import com.ph14.fdb.zk.layer.StatKey;
 
-public class FdbSetWatchesOp implements FdbOp<SetWatches, Boolean> {
+public class FdbSetWatchesOp implements FdbOp<SetWatches, List<WatchedEvent>> {
 
   private final FdbNodeReader fdbNodeReader;
   private final FdbWatchManager fdbWatchManager;
@@ -36,10 +37,10 @@ public class FdbSetWatchesOp implements FdbOp<SetWatches, Boolean> {
   }
 
   @Override
-  public CompletableFuture<Result<Boolean, KeeperException>> execute(Request zkRequest, Transaction transaction, SetWatches setWatches) {
+  public CompletableFuture<Result<List<WatchedEvent>, KeeperException>> execute(Request zkRequest, Transaction transaction, SetWatches setWatches) {
     Watcher watcher = zkRequest.cnxn;
 
-    List<CompletableFuture<Void>> backfilledWatches = new ArrayList<>(
+    List<CompletableFuture<Optional<WatchedEvent>>> backfilledWatches = new ArrayList<>(
         setWatches.getDataWatches().size()
             + setWatches.getExistWatches().size()
             + setWatches.getChildWatches().size());
@@ -47,15 +48,17 @@ public class FdbSetWatchesOp implements FdbOp<SetWatches, Boolean> {
     for (String path : setWatches.getDataWatches()) {
       backfilledWatches.add(
           readNodeStat(transaction, path, StatKey.MZXID)
-              .thenAccept(stat -> {
-                if (stat.getMzxid() == 0) {
-                  watcher.process(new WatchedEvent(EventType.NodeDeleted,
+              .thenApply(stat -> {
+                if (!stat.isPresent()) {
+                  return Optional.of(new WatchedEvent(EventType.NodeDeleted,
                       KeeperState.SyncConnected, path));
-                } else if (stat.getMzxid() > setWatches.getRelativeZxid()) {
-                  watcher.process(new WatchedEvent(EventType.NodeDataChanged,
+                } else if (stat.get().getMzxid() > setWatches.getRelativeZxid()) {
+                  return Optional.of(new WatchedEvent(EventType.NodeDataChanged,
                       KeeperState.SyncConnected, path));
                 } else {
                   fdbWatchManager.addNodeDataUpdatedWatch(transaction, path, watcher, zkRequest.sessionId);
+                  fdbWatchManager.addNodeDeletedWatch(transaction, path, watcher, zkRequest.sessionId);
+                  return Optional.<WatchedEvent>empty();
                 }
               })
       );
@@ -64,12 +67,13 @@ public class FdbSetWatchesOp implements FdbOp<SetWatches, Boolean> {
     for (String path : setWatches.getExistWatches()) {
       backfilledWatches.add(
           readNodeStat(transaction, path, StatKey.CZXID)
-              .thenAccept(stat -> {
-                if (stat.getCzxid() != 0) {
-                  watcher.process(new WatchedEvent(EventType.NodeCreated,
+              .thenApply(stat -> {
+                if (stat.isPresent()) {
+                  return Optional.of(new WatchedEvent(EventType.NodeCreated,
                       KeeperState.SyncConnected, path));
                 } else {
                   fdbWatchManager.addNodeCreatedWatch(transaction, path, watcher, zkRequest.sessionId);
+                  return Optional.<WatchedEvent>empty();
                 }
               })
       );
@@ -78,34 +82,36 @@ public class FdbSetWatchesOp implements FdbOp<SetWatches, Boolean> {
     for (String path : setWatches.getChildWatches()) {
       backfilledWatches.add(
           readNodeStat(transaction, path, StatKey.PZXID)
-              .thenAccept(stat -> {
-
-                if (stat.getPzxid() == 0) {
-                  watcher.process(new WatchedEvent(EventType.NodeDeleted,
+              .thenApply(stat -> {
+                if (!stat.isPresent()) {
+                  return Optional.of(new WatchedEvent(EventType.NodeDeleted,
                       KeeperState.SyncConnected, path));
-                } else if (stat.getPzxid() > setWatches.getRelativeZxid()) {
-                  watcher.process(new WatchedEvent(EventType.NodeChildrenChanged,
+                } else if (stat.get().getPzxid() > setWatches.getRelativeZxid()) {
+                  return Optional.of(new WatchedEvent(EventType.NodeChildrenChanged,
                       KeeperState.SyncConnected, path));
                 } else {
                   fdbWatchManager.addNodeChildrenWatch(transaction, path, watcher, zkRequest.sessionId);
+                  fdbWatchManager.addNodeDeletedWatch(transaction, path, watcher, zkRequest.sessionId);
+                  return Optional.<WatchedEvent>empty();
                 }
               })
       );
     }
 
-    // Results cannot hold null; a non-Record ok value means "reply without a body".
-    return AsyncUtil.whenAll(backfilledWatches).thenApply(v -> Result.ok(Boolean.TRUE));
+    return AsyncUtil.getAll(backfilledWatches).thenApply(events -> Result.ok(events.stream()
+        .flatMap(Optional::stream)
+        .collect(Collectors.toList())));
   }
 
-  private CompletableFuture<Stat> readNodeStat(Transaction transaction, String zkPath, StatKey ... statKeys) {
+  private CompletableFuture<Optional<Stat>> readNodeStat(Transaction transaction, String zkPath, StatKey ... statKeys) {
     List<String> fdbPath = FdbPath.toFdbPath(zkPath);
 
-    // A watched path that does not exist (yet) reads as an all-zero Stat: the caller then sets a creation watch.
     return com.ph14.fdb.zk.FdbZkKeyspace.dir().exists(transaction, fdbPath)
         .thenCompose(exists -> exists
             ? com.ph14.fdb.zk.FdbZkKeyspace.dir().open(transaction, fdbPath)
                 .thenCompose(nodeSubspace -> fdbNodeReader.getNodeStat(nodeSubspace, transaction, statKeys))
-            : CompletableFuture.completedFuture(new Stat()));
+                .thenApply(Optional::of)
+            : CompletableFuture.completedFuture(Optional.empty()));
   }
 
 }

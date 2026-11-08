@@ -8,6 +8,7 @@ import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
 
 import org.apache.zookeeper.data.ACL;
+import org.apache.zookeeper.data.Stat;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -51,10 +52,11 @@ public class FdbNodeWriter {
     this.versionstampValue = Tuple.from(Versionstamp.incomplete()).packWithVersionstamp();
   }
 
-  public void createNewNode(Transaction transaction, Subspace nodeSubspace, FdbNode fdbNode) {
-    writeStat(transaction, nodeSubspace, fdbNode);
+  public Stat createNewNode(Transaction transaction, Subspace nodeSubspace, FdbNode fdbNode) {
+    Stat stat = writeStat(transaction, nodeSubspace, fdbNode);
     writeData(transaction, nodeSubspace, fdbNode.getData());
     writeACLs(transaction, nodeSubspace, fdbNode.getAcls());
+    return stat;
   }
 
   public void writeData(Transaction transaction, Subspace nodeSubspace, byte[] data) {
@@ -101,11 +103,12 @@ public class FdbNodeWriter {
     return nodeSubspace.remove(transaction);
   }
 
-  private void writeStat(Transaction transaction, Subspace nodeSubspace, FdbNode fdbNode) {
+  private Stat writeStat(Transaction transaction, Subspace nodeSubspace, FdbNode fdbNode) {
     if (fdbNode.getStat() == null) {
-      writeStatForNewNode(transaction, nodeSubspace, fdbNode.getData(), fdbNode.getEphemeralSessionId());
+      return writeStatForNewNode(transaction, nodeSubspace, fdbNode.getData(), fdbNode.getEphemeralSessionId());
     } else {
       writeStatFromExistingNode(transaction, nodeSubspace, fdbNode);
+      return fdbNode.getStat();
     }
   }
 
@@ -125,12 +128,14 @@ public class FdbNodeWriter {
     }
   }
 
-  private void writeStatForNewNode(Transaction transaction, Subspace nodeSubspace, byte[] data, Optional<Long> ephemeralOwnerId) {
-    byte[] now = Longs.toByteArray(System.currentTimeMillis());
+  private Stat writeStatForNewNode(Transaction transaction, Subspace nodeSubspace, byte[] data, Optional<Long> ephemeralOwnerId) {
+    long nowMillis = System.currentTimeMillis();
+    byte[] now = Longs.toByteArray(nowMillis);
     Subspace nodeStatSubspace = nodeSubspace.get(FdbSchemaConstants.STAT_KEY);
 
     transaction.mutate(MutationType.SET_VERSIONSTAMPED_VALUE, StatKey.CZXID.toKey(nodeStatSubspace), versionstampValue);
     transaction.mutate(MutationType.SET_VERSIONSTAMPED_VALUE, StatKey.MZXID.toKey(nodeStatSubspace), versionstampValue);
+    transaction.mutate(MutationType.SET_VERSIONSTAMPED_VALUE, StatKey.PZXID.toKey(nodeStatSubspace), versionstampValue);
 
     transaction.set(StatKey.CTIME.toKey(nodeStatSubspace), now);
     transaction.set(StatKey.MTIME.toKey(nodeStatSubspace), now);
@@ -140,6 +145,13 @@ public class FdbNodeWriter {
     transaction.set(StatKey.CVERSION.toKey(nodeStatSubspace), INITIAL_VERSION);
     transaction.set(StatKey.AVERSION.toKey(nodeStatSubspace), INITIAL_VERSION);
     transaction.set(StatKey.EPHEMERAL_OWNER.toKey(nodeStatSubspace), StatKey.EPHEMERAL_OWNER.getValue(ephemeralOwnerId.orElse(-1L)));
+
+    Stat stat = new Stat();
+    stat.setCtime(nowMillis);
+    stat.setMtime(nowMillis);
+    stat.setDataLength(data.length);
+    stat.setEphemeralOwner(ephemeralOwnerId.orElse(0L));
+    return stat;
   }
 
   @VisibleForTesting

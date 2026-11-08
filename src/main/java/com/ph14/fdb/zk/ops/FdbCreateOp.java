@@ -10,6 +10,7 @@ import org.apache.zookeeper.KeeperException;
 import org.apache.zookeeper.KeeperException.NoChildrenForEphemeralsException;
 import org.apache.zookeeper.KeeperException.NodeExistsException;
 import org.apache.zookeeper.data.Stat;
+import org.apache.zookeeper.proto.Create2Response;
 import org.apache.zookeeper.proto.CreateRequest;
 import org.apache.zookeeper.proto.CreateResponse;
 import org.apache.zookeeper.server.Request;
@@ -18,7 +19,6 @@ import org.slf4j.LoggerFactory;
 
 import com.apple.foundationdb.Transaction;
 import com.apple.foundationdb.directory.DirectoryAlreadyExistsException;
-import com.apple.foundationdb.directory.DirectoryLayer;
 import com.apple.foundationdb.directory.DirectorySubspace;
 import com.apple.foundationdb.directory.NoSuchDirectoryException;
 import com.google.common.collect.ImmutableMap;
@@ -54,11 +54,27 @@ public class FdbCreateOp implements FdbOp<CreateRequest, CreateResponse> {
 
   @Override
   public CompletableFuture<Result<CreateResponse, KeeperException>> execute(Request zkRequest, Transaction transaction, CreateRequest request) {
+    return CompletableFuture.completedFuture(create(zkRequest, transaction, request)
+        .mapOk(response -> new CreateResponse(response.getPath())));
+  }
+
+  public Result<CompletableFuture<Create2Response>, KeeperException> prepare(Request zkRequest, Transaction transaction, CreateRequest request) {
+    return create(zkRequest, transaction, request).mapOk(response ->
+        transaction.getVersionstamp().thenApply(versionstamp -> {
+          long zxid = FdbNodeReader.zxidFromVersionstamp(versionstamp);
+          response.getStat().setCzxid(zxid);
+          response.getStat().setMzxid(zxid);
+          response.getStat().setPzxid(zxid);
+          return response;
+        }));
+  }
+
+  private Result<Create2Response, KeeperException> create(Request zkRequest, Transaction transaction, CreateRequest request) {
     final CreateMode createMode;
     try {
       createMode = CreateMode.fromFlag(request.getFlags());
     } catch (KeeperException e) {
-      return CompletableFuture.completedFuture(Result.err(e));
+      return Result.err(e);
     }
 
     final DirectorySubspace parentSubspace;
@@ -70,15 +86,15 @@ public class FdbCreateOp implements FdbOp<CreateRequest, CreateResponse> {
     } catch (CompletionException e) {
       if (e.getCause() instanceof NoSuchDirectoryException) {
         LOG.error("Couldn't find parent: {} for {}", FdbPath.toFdbParentPath(request.getPath()), request.getPath());
-        return CompletableFuture.completedFuture(Result.err(new KeeperException.NoNodeException("parent: " + request.getPath())));
+        return Result.err(new KeeperException.NoNodeException("parent: " + request.getPath()));
       } else {
         LOG.error("Error completing request : {}. {}", request, e);
-        return CompletableFuture.completedFuture(Result.err(new KeeperException.APIErrorException()));
+        return Result.err(new KeeperException.APIErrorException());
       }
     }
 
     if (parentStat.getEphemeralOwner() != 0) {
-      return CompletableFuture.completedFuture(Result.err(new NoChildrenForEphemeralsException()));
+      return Result.err(new NoChildrenForEphemeralsException());
     }
 
     final String finalZkPath;
@@ -98,14 +114,14 @@ public class FdbCreateOp implements FdbOp<CreateRequest, CreateResponse> {
       subspace = com.ph14.fdb.zk.FdbZkKeyspace.dir().create(transaction, FdbPath.toFdbPath(finalZkPath)).join();
     } catch (CompletionException e) {
       if (e.getCause() instanceof DirectoryAlreadyExistsException) {
-        return CompletableFuture.completedFuture(Result.err(new NodeExistsException(request.getPath())));
+        return Result.err(new NodeExistsException(request.getPath()));
       } else {
         LOG.error("Error completing request : {}. {}", request, e);
-        return CompletableFuture.completedFuture(Result.err(new KeeperException.SystemErrorException()));
+        return Result.err(new KeeperException.SystemErrorException());
       }
     }
 
-    fdbNodeWriter.createNewNode(transaction, subspace, fdbNode);
+    Stat stat = fdbNodeWriter.createNewNode(transaction, subspace, fdbNode);
 
     if (createMode.isEphemeral()) {
       fdbEphemeralNodeManager.addEphemeralNode(transaction, finalZkPath, zkRequest.sessionId);
@@ -123,7 +139,7 @@ public class FdbCreateOp implements FdbOp<CreateRequest, CreateResponse> {
     fdbWatchManager.triggerNodeCreatedWatch(transaction, request.getPath());
     fdbWatchManager.triggerNodeChildrenWatch(transaction, FdbPath.toZkParentPath(request.getPath()));
 
-    return CompletableFuture.completedFuture(Result.ok(new CreateResponse(finalZkPath)));
+    return Result.ok(new Create2Response(finalZkPath, stat));
   }
 
 }

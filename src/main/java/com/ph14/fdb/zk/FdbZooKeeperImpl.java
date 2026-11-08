@@ -3,6 +3,7 @@ package com.ph14.fdb.zk;
 import java.io.IOException;
 import java.util.Arrays;
 import java.util.Set;
+import java.util.concurrent.CompletableFuture;
 
 import org.apache.zookeeper.KeeperException;
 import org.apache.zookeeper.KeeperException.SessionExpiredException;
@@ -16,16 +17,16 @@ import org.apache.zookeeper.proto.ExistsRequest;
 import org.apache.zookeeper.proto.GetChildren2Request;
 import org.apache.zookeeper.proto.GetChildrenRequest;
 import org.apache.zookeeper.proto.GetDataRequest;
-import org.apache.zookeeper.proto.SetACLRequest;
 import org.apache.zookeeper.proto.SetDataRequest;
 import org.apache.zookeeper.proto.SetWatches;
 import org.apache.zookeeper.proto.SyncRequest;
 import org.apache.zookeeper.proto.SyncResponse;
+import org.apache.zookeeper.proto.WhoAmIResponse;
 import org.apache.zookeeper.server.Request;
+import org.apache.zookeeper.server.util.AuthUtil;
 import org.apache.zookeeper.txn.CreateSessionTxn;
 
 import com.apple.foundationdb.Database;
-import com.google.common.base.Preconditions;
 import com.google.common.collect.ImmutableSet;
 import com.google.inject.Inject;
 import com.hubspot.algebra.Result;
@@ -37,6 +38,7 @@ import com.ph14.fdb.zk.ops.FdbGetChildrenOp;
 import com.ph14.fdb.zk.ops.FdbGetChildrenWithStatOp;
 import com.ph14.fdb.zk.ops.FdbGetDataOp;
 import com.ph14.fdb.zk.ops.FdbMultiOp;
+import com.ph14.fdb.zk.ops.FdbOp;
 import com.ph14.fdb.zk.ops.FdbSetDataOp;
 import com.ph14.fdb.zk.ops.FdbSetWatchesOp;
 import com.ph14.fdb.zk.session.FdbSessionManager;
@@ -52,9 +54,9 @@ public class FdbZooKeeperImpl {
       .addAll(
           Arrays.asList(
               OpCode.create,
+              OpCode.create2,
               OpCode.delete,
               OpCode.setData,
-              OpCode.setACL,
               OpCode.multi,
               OpCode.exists,
               OpCode.getData,
@@ -62,8 +64,8 @@ public class FdbZooKeeperImpl {
               OpCode.getChildren,
               OpCode.getChildren2, // includes stat of node
               OpCode.setWatches,
-              OpCode.multi,
               OpCode.check,
+              OpCode.whoAmI,
 
               OpCode.sync,
               OpCode.ping,
@@ -123,7 +125,9 @@ public class FdbZooKeeperImpl {
   }
 
   public Result<?, KeeperException> handle(Request request) throws IOException {
-    Preconditions.checkArgument(handlesRequest(request), "does not handle request: " + request);
+    if (!handlesRequest(request)) {
+      return Result.err(new KeeperException.UnimplementedException());
+    }
 
     if (!OPS_WITHOUT_SESSION_CHECK.contains(request.type)) {
       try {
@@ -135,8 +139,14 @@ public class FdbZooKeeperImpl {
 
     switch (request.type) {
       case OpCode.create:
+        CreateRequest createRequest = request.readRequestRecord(CreateRequest::new);
+        return fdb.runAsync(tr -> fdbCreateOp.execute(request, tr, createRequest)).join();
+
+      case OpCode.create2:
         CreateRequest create2Request = request.readRequestRecord(CreateRequest::new);
-        return fdb.runAsync(tr -> fdbCreateOp.execute(request, tr, create2Request)).join();
+        return fdb.runAsync(tr -> CompletableFuture.completedFuture(fdbCreateOp.prepare(request, tr, create2Request)))
+            .thenCompose(FdbOp::afterCommit)
+            .join();
 
       case OpCode.exists:
         ExistsRequest existsRequest = request.readRequestRecord(ExistsRequest::new);
@@ -180,19 +190,25 @@ public class FdbZooKeeperImpl {
 
       case OpCode.setData:
         SetDataRequest setDataRequest = request.readRequestRecord(SetDataRequest::new);
-        return fdb.runAsync(tr -> fdbSetDataOp.execute(request, tr, setDataRequest)).join();
+        return fdb.runAsync(tr -> CompletableFuture.completedFuture(fdbSetDataOp.prepare(request, tr, setDataRequest)))
+            .thenCompose(FdbOp::afterCommit)
+            .join();
 
       case OpCode.check:
         CheckVersionRequest checkVersionRequest = request.readRequestRecord(CheckVersionRequest::new);
         return fdb.runAsync(tr -> fdbCheckVersionOp.execute(request, tr, checkVersionRequest)).join();
 
-      case OpCode.setACL:
-        SetACLRequest setACLRequest = request.readRequestRecord(SetACLRequest::new);
-        throw new UnsupportedOperationException("not there yet");
-
       case OpCode.setWatches:
         SetWatches setWatches = request.readRequestRecord(SetWatches::new);
-        return fdb.runAsync(tr -> fdbSetWatchesOp.execute(request, tr, setWatches)).join();
+        return fdb.runAsync(tr -> fdbSetWatchesOp.execute(request, tr, setWatches))
+            .thenApply(result -> result.mapOk(events -> {
+              events.forEach(request.cnxn::process);
+              return Boolean.TRUE;
+            }))
+            .join();
+
+      case OpCode.whoAmI:
+        return Result.ok(new WhoAmIResponse(AuthUtil.getClientInfos(request.authInfo)));
 
       case OpCode.createSession:
         int to = java.nio.ByteBuffer.wrap(request.readRequestBytes()).getInt();
@@ -219,7 +235,7 @@ public class FdbZooKeeperImpl {
         return Result.ok(true);
     }
 
-    return Result.err(new KeeperException.BadArgumentsException());
+    return Result.err(new KeeperException.UnimplementedException());
   }
 
 }

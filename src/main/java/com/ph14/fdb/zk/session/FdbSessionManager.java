@@ -165,7 +165,7 @@ public class FdbSessionManager implements SessionTracker {
 
   @Override
   public boolean touchSession(long sessionId, int sessionTimeout) {
-    byte[] value = fdb.read(rt -> rt.get(getSessionByIdKey(sessionId))).join();
+    byte[] value = fdb.readAsync(rt -> rt.get(getSessionByIdKey(sessionId))).join();
 
     if (value == null) {
       return false;

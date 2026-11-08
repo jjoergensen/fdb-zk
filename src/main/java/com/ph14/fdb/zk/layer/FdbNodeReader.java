@@ -17,6 +17,8 @@ import com.apple.foundationdb.directory.DirectoryLayer;
 import com.apple.foundationdb.directory.DirectorySubspace;
 import com.apple.foundationdb.subspace.Subspace;
 import com.apple.foundationdb.tuple.ByteArrayUtil;
+import com.apple.foundationdb.tuple.Tuple;
+import com.apple.foundationdb.tuple.Versionstamp;
 import com.google.common.collect.ArrayListMultimap;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ListMultimap;
@@ -32,6 +34,11 @@ public class FdbNodeReader {
 
   @Inject
   public FdbNodeReader() {
+  }
+
+  public static long zxidFromVersionstamp(byte[] versionstamp) {
+    // Responses must match the existing tuple-encoded zxids read from storage.
+    return Longs.fromByteArray(Tuple.from(Versionstamp.complete(versionstamp)).pack());
   }
 
   public CompletableFuture<DirectorySubspace> getNodeDirectory(Transaction transaction, String zkPath) {

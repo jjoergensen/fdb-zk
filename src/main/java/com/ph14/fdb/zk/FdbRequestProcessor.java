@@ -13,7 +13,6 @@ import org.apache.zookeeper.server.ZooKeeperServer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import com.google.common.base.Preconditions;
 import com.hubspot.algebra.Result;
 
 public class FdbRequestProcessor implements RequestProcessor {
@@ -34,37 +33,42 @@ public class FdbRequestProcessor implements RequestProcessor {
 
   @Override
   public void processRequest(Request request) {
-    LOG.debug("Received request in Fdb Request Processor: {}", request);
-
-    Preconditions.checkState(
-        fdbZooKeeper.handlesRequest(request),
-        String.format("given unprocessable request type %s", request.type));
-
     try {
-      sendResponse(request, fdbZooKeeper.handle(request));
-    } catch (IOException e) {
-      LOG.error("Failed to process request {}", request, e);
-    } catch (RuntimeException e) {
-      // This runs on ZooKeeper's RequestThrottler, a critical thread: an escaping exception stops the whole server.
-      // Fail only this request.
-      LOG.error("Request failed: {}", request, e);
+      LOG.debug("Received request in Fdb Request Processor: {}", request);
+      Result<?, KeeperException> result;
       try {
-        sendResponse(request, com.hubspot.algebra.Result.err(new KeeperException.SystemErrorException()));
-      } catch (RuntimeException replyFailure) {
-        LOG.error("Could not send error reply for {}", request, replyFailure);
+        result = fdbZooKeeper.handlesRequest(request)
+            ? fdbZooKeeper.handle(request)
+            : Result.err(new KeeperException.UnimplementedException());
+      } catch (IOException e) {
+        LOG.error("Failed to deserialize request {}", request, e);
+        result = Result.err(new KeeperException.MarshallingErrorException());
+      } catch (Throwable e) {
+        // RequestThrottler must survive failures in an individual request.
+        LOG.error("Request failed: {}", request, e);
+        result = Result.err(new KeeperException.SystemErrorException());
       }
+      sendResponse(request, result);
+    } catch (Throwable replyFailure) {
+      LOG.error("Could not send reply for {}", request, replyFailure);
     } finally {
-      // What FinalRequestProcessor does for every request in 3.9; without it the RequestThrottler's
-      // in-process count only grows and the server eventually stops admitting requests.
-      zooKeeperServer.decInProcess();
-      zooKeeperServer.requestFinished(request);
+      try {
+        zooKeeperServer.decInProcess();
+      } catch (Throwable e) {
+        LOG.error("Could not decrement in-process count for {}", request, e);
+      }
+      try {
+        zooKeeperServer.requestFinished(request);
+      } catch (Throwable e) {
+        LOG.error("Could not finish request {}", request, e);
+      }
     }
   }
 
   private void sendResponse(Request request,
                             Result<?, KeeperException> fdbResult) {
     if (request.type == OpCode.createSession) {
-      zooKeeperServer.finishSessionInit(request.cnxn, true);
+      zooKeeperServer.finishSessionInit(request.cnxn, fdbResult.isOk());
       return;
     }
 

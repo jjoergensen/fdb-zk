@@ -15,4 +15,11 @@ public interface FdbOp<REQ, RESP> {
    */
   CompletableFuture<Result<RESP, KeeperException>> execute(Request zkRequest, Transaction transaction, REQ request);
 
+  static <T> CompletableFuture<Result<T, KeeperException>> afterCommit(Result<CompletableFuture<T>, KeeperException> prepared) {
+    if (prepared.isErr()) {
+      return CompletableFuture.completedFuture(Result.err(prepared.unwrapErrOrElseThrow()));
+    }
+    return prepared.unwrapOrElseThrow().thenApply(Result::ok);
+  }
+
 }

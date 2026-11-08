@@ -102,7 +102,7 @@ public class WatchEventChangefeed {
 
       Range allAvailableZKWatchEvents = Range.startsWith(com.ph14.fdb.zk.FdbZkKeyspace.raw().pack(Tuple.from(CHANGEFEED_NAMESPACE, sessionId)));
 
-      List<ChangefeedWatchEvent> watchEvents = database.run(
+      List<ChangefeedWatchEvent> watchEvents = database.readAsync(
           transaction -> transaction.getRange(allAvailableZKWatchEvents).asList())
           .thenApply(kvs -> kvs.stream()
               .map(WatchEventChangefeed::toWatchEvent)

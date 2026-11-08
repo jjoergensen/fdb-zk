@@ -22,7 +22,7 @@ import com.hubspot.algebra.Results;
 import com.ph14.fdb.zk.layer.FdbNodeReader;
 import com.ph14.fdb.zk.layer.FdbPath;
 
-public class FdbCheckVersionOp implements FdbOp<CheckVersionRequest, Void> {
+public class FdbCheckVersionOp implements FdbOp<CheckVersionRequest, Boolean> {
 
   private final FdbNodeReader fdbNodeReader;
 
@@ -32,7 +32,7 @@ public class FdbCheckVersionOp implements FdbOp<CheckVersionRequest, Void> {
   }
 
   @Override
-  public CompletableFuture<Result<Void, KeeperException>> execute(Request zkRequest, Transaction transaction, CheckVersionRequest request) {
+  public CompletableFuture<Result<Boolean, KeeperException>> execute(Request zkRequest, Transaction transaction, CheckVersionRequest request) {
     List<String> path = FdbPath.toFdbPath(request.getPath());
 
     final DirectorySubspace subspace;
@@ -52,7 +52,7 @@ public class FdbCheckVersionOp implements FdbOp<CheckVersionRequest, Void> {
       }
     }
 
-     return CompletableFuture.completedFuture(Result.ok(null));
+    return CompletableFuture.completedFuture(Result.ok(Boolean.TRUE));
   }
 
 }
